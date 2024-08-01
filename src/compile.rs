@@ -57,7 +57,7 @@ pub enum CompileErr<Span> {
 pub fn check_prog<Span>(p: &SurfProg<Span>) -> Result<(), CompileErr<Span>>
 where
     Span: Clone,
-    {
+{
     let mut appeared = HashSet::<String>::new();
     let res = check_prog_inner(p, &mut appeared);
     res
@@ -69,8 +69,10 @@ static I63_MIN: i64 = -0x40_00_00_00_00_00_00_00;
 fn check_prog_inner<Span>(
     e: &Exp<Span>,
     symbols: &mut HashSet<String>,
-) -> Result<(), CompileErr<Span>> where
-Span: Clone,{
+) -> Result<(), CompileErr<Span>>
+where
+    Span: Clone,
+{
     match e {
         Exp::Num(i, ann) => {
             if *i > I63_MAX || *i < I63_MIN {
@@ -130,11 +132,16 @@ Span: Clone,{
         Exp::FunDefs { decls, body, ann } => todo!(),
         Exp::Call(_, _, _) => todo!(),
         Exp::InternalTailCall(_, _, _) => todo!(),
-        Exp::ExternalCall { fun_name, args, is_tail, ann } => todo!(),
+        Exp::ExternalCall {
+            fun_name,
+            args,
+            is_tail,
+            ann,
+        } => todo!(),
     }
 }
 
-fn try_flatten_prim1(p: &Prim, exp: &SeqExp<()>, ann: u32) -> Option<SeqExp<()>> {
+fn try_flatten_prim1(p: &Prim, exp: &SeqExp<()>) -> Option<SeqExp<()>> {
     match exp {
         SeqExp::Imm(i, _) => Some(SeqExp::Prim(*p, vec![i.clone()], ())),
         _ => None,
@@ -145,13 +152,14 @@ fn try_flatten_prim2(
     p: &Prim,
     exp1: &SeqExp<()>,
     exp2: &SeqExp<()>,
-    ann: u32,
+    counter: &mut u32,
 ) -> Option<SeqExp<()>> {
     if let SeqExp::Imm(i1, _) = exp1 {
         if let SeqExp::Imm(i2, _) = exp2 {
             return Some(SeqExp::Prim(*p, vec![i1.clone(), i2.clone()], ()));
         }
-        let name2 = format!("#prim2_2_{}", ann);
+        *counter += 1;
+        let name2 = format!("#prim2_2_{}", counter);
         return Some(SeqExp::Let {
             var: name2.clone(),
             bound_exp: Box::new(exp2.clone()),
@@ -160,7 +168,8 @@ fn try_flatten_prim2(
         });
     }
     if let SeqExp::Imm(i2, _) = exp2 {
-        let name1 = format!("#prim2_1_{}", ann);
+        *counter += 1;
+        let name1 = format!("#prim2_1_{}", counter);
 
         return Some(SeqExp::Let {
             var: name1.clone(),
@@ -172,7 +181,7 @@ fn try_flatten_prim2(
     None
 }
 
-fn sequentialize(e: &Exp<u32>) -> SeqExp<()> {
+fn sequentialize<Span>(e: &Exp<Span>, counter: &mut u32) -> SeqExp<()> {
     match e {
         Exp::Bool(b, _) => SeqExp::Imm(ImmExp::Bool(*b), ()),
         Exp::Num(i, _) => SeqExp::Imm(ImmExp::Num(*i), ()),
@@ -180,34 +189,28 @@ fn sequentialize(e: &Exp<u32>) -> SeqExp<()> {
         Exp::Prim(p, exps, ann) => {
             // Prim_1
             if exps.len() == 1 {
-                let a = sequentialize(&exps[0]);
-                if let Some(flattened) = try_flatten_prim1(p, &a, *ann)
-                {
+                let a = sequentialize(&exps[0], counter);
+                if let Some(flattened) = try_flatten_prim1(p, &a) {
                     return flattened;
                 }
-
-                let name1 = format!("#prim1_{}", ann);
+                *counter += 1;
+                let name1 = format!("#prim1_{}", counter);
                 SeqExp::Let {
                     var: name1.clone(),
                     bound_exp: Box::new(a),
                     ann: (),
-                    body: Box::new(SeqExp::Prim(
-                        *p,
-                        vec![ImmExp::Var(name1)],
-                        (),
-                    )),
+                    body: Box::new(SeqExp::Prim(*p, vec![ImmExp::Var(name1)], ())),
                 }
             // Prim_2
             } else {
-                let a = sequentialize(&exps[0]);
-                let b = sequentialize(&exps[1]);
-                if let Some(flattened) =
-                    try_flatten_prim2(p, &a, &b, *ann)
-                {
+                let a = sequentialize(&exps[0], counter);
+                let b = sequentialize(&exps[1], counter);
+                if let Some(flattened) = try_flatten_prim2(p, &a, &b, counter) {
                     return flattened;
                 }
-                let name1 = format!("#prim2_1_{}", ann);
-                let name2 = format!("#prim2_2_{}", ann);
+                *counter += 1;
+                let name1 = format!("#prim2_1_{}", counter);
+                let name2 = format!("#prim2_2_{}", counter);
                 SeqExp::Let {
                     var: name1.clone(),
                     bound_exp: Box::new(a),
@@ -234,11 +237,11 @@ fn sequentialize(e: &Exp<u32>) -> SeqExp<()> {
             for (var, exp) in bindings.iter().rev() {
                 optionRes = Some(SeqExp::Let {
                     var: var.clone(),
-                    bound_exp: Box::new(sequentialize(&exp)),
+                    bound_exp: Box::new(sequentialize(&exp, counter)),
                     body: if optionRes.is_some() {
                         Box::new(optionRes.unwrap())
                     } else {
-                        Box::new(sequentialize(body))
+                        Box::new(sequentialize(body, counter))
                     },
                     ann: (),
                 })
@@ -251,14 +254,15 @@ fn sequentialize(e: &Exp<u32>) -> SeqExp<()> {
             els,
             ann,
         } => {
-            let var_name = format!("#if_{}", ann);
+            *counter += 1;
+            let var_name = format!("#if_{}", counter);
             SeqExp::Let {
                 var: var_name.clone(),
-                bound_exp: Box::new(sequentialize(cond)),
+                bound_exp: Box::new(sequentialize(cond, counter)),
                 body: Box::new(SeqExp::If {
                     cond: ImmExp::Var(var_name),
-                    thn: Box::new(sequentialize(thn)),
-                    els: Box::new(sequentialize(els)),
+                    thn: Box::new(sequentialize(thn, counter)),
+                    els: Box::new(sequentialize(els, counter)),
                     ann: (),
                 }),
                 ann: (),
@@ -267,7 +271,12 @@ fn sequentialize(e: &Exp<u32>) -> SeqExp<()> {
         Exp::FunDefs { decls, body, ann } => todo!(),
         Exp::Call(_, _, _) => todo!(),
         Exp::InternalTailCall(_, _, _) => todo!(),
-        Exp::ExternalCall { fun_name, args, is_tail, ann } => todo!(),
+        Exp::ExternalCall {
+            fun_name,
+            args,
+            is_tail,
+            ann,
+        } => todo!(),
     }
 }
 
@@ -422,12 +431,13 @@ fn if_check(reg: Reg) -> Vec<Instr> {
 
 fn compile_to_instrs_inner<'a, 'b>(
     e: &'a SeqExp<()>,
+    counter: &mut u32,
     max_stack: u32,
     stack: &'b mut Vec<(&'a str, i32)>,
 ) -> Vec<Instr> {
     match e {
         SeqExp::Imm(exp, _) => imm_to_rax(exp, stack),
-        SeqExp::Prim(p, exps, ann) => {
+        SeqExp::Prim(p, exps, _) => {
             let mut res = imm_to_rax(&exps[0], stack);
             //
             match p {
@@ -546,8 +556,9 @@ fn compile_to_instrs_inner<'a, 'b>(
                         Reg::Rdx,
                         imm_to_arg64(&exps[1], stack),
                     )));
-                    let fls_label = format!("false_{:?}", ann);
-                    let done_label = format!("cmp_done_{:?}", ann);
+                    *counter += 1;
+                    let fls_label = format!("false_{}", counter);
+                    let done_label = format!("cmp_done_{}", counter);
                     res.append(&mut vec![
                         Instr::Cmp(BinArgs::ToReg(Reg::Rax, Arg32::Reg(Reg::Rdx))),
                         Instr::Jne(fls_label.clone()),
@@ -558,7 +569,24 @@ fn compile_to_instrs_inner<'a, 'b>(
                         Instr::Label(done_label),
                     ]);
                 }
-                Prim::Neq => todo!(),
+                Prim::Neq => {
+                    res.push(Instr::Mov(MovArgs::ToReg(
+                        Reg::Rdx,
+                        imm_to_arg64(&exps[1], stack),
+                    )));
+                    *counter += 1;
+                    let fls_label = format!("false_{}", counter);
+                    let done_label = format!("cmp_done_{}", counter);
+                    res.append(&mut vec![
+                        Instr::Cmp(BinArgs::ToReg(Reg::Rax, Arg32::Reg(Reg::Rdx))),
+                        Instr::Je(fls_label.clone()),
+                        Instr::Mov(MovArgs::ToReg(Reg::Rax, Arg64::Unsigned(SNAKE_TRU))),
+                        Instr::Jmp(done_label.clone()),
+                        Instr::Label(fls_label),
+                        Instr::Mov(MovArgs::ToReg(Reg::Rax, Arg64::Unsigned(SNAKE_FLS))),
+                        Instr::Label(done_label),
+                    ]);
+                }
             }
             res
         }
@@ -568,7 +596,7 @@ fn compile_to_instrs_inner<'a, 'b>(
             body,
             ann,
         } => {
-            let mut res = compile_to_instrs_inner(&bound_exp, max_stack, stack);
+            let mut res = compile_to_instrs_inner(&bound_exp, counter, max_stack, stack);
             let offset: i32 = ((stack.len() + 1) * 8).try_into().unwrap();
             res.push(Instr::Mov(MovArgs::ToMem(
                 MemRef {
@@ -579,7 +607,9 @@ fn compile_to_instrs_inner<'a, 'b>(
             )));
             stack.push((var, offset));
 
-            res.append(&mut compile_to_instrs_inner(&body, max_stack, stack));
+            res.append(&mut compile_to_instrs_inner(
+                &body, counter, max_stack, stack,
+            ));
             res
         }
         SeqExp::If {
@@ -590,8 +620,9 @@ fn compile_to_instrs_inner<'a, 'b>(
         } => {
             let mut res = imm_to_rax(cond, stack);
             res.append(&mut if_check(Reg::Rax));
-            let els_label = format!("else_{:?}", ann);
-            let done_label = format!("done_{:?}", ann);
+            *counter += 1;
+            let els_label = format!("else_{}", counter);
+            let done_label = format!("done_{}", counter);
             res.append(&mut vec![
                 // todo: fix cmp with types
                 Instr::Mov(MovArgs::ToReg(Reg::Rdx, Arg64::Unsigned(SNAKE_FLS))),
@@ -601,25 +632,31 @@ fn compile_to_instrs_inner<'a, 'b>(
 
             res.append(&mut compile_to_instrs_inner(
                 thn,
+                counter,
                 max_stack,
                 &mut stack.clone(),
             ));
             res.push(Instr::Jmp(done_label.clone()));
 
             res.push(Instr::Label(els_label));
-            res.append(&mut compile_to_instrs_inner(els, max_stack, stack));
+            res.append(&mut compile_to_instrs_inner(els, counter, max_stack, stack));
             res.push(Instr::Label(done_label));
             res
         }
         SeqExp::FunDefs { decls, body, ann } => todo!(),
         SeqExp::InternalTailCall(_, _, _) => todo!(),
-        SeqExp::ExternalCall { fun_name, args, is_tail, ann } => todo!(),
+        SeqExp::ExternalCall {
+            fun_name,
+            args,
+            is_tail,
+            ann,
+        } => todo!(),
     }
 }
 
 /* Feel free to add any helper functions you need */
 fn compile_to_instrs(e: &SeqExp<()>, max_stack: u32) -> Vec<Instr> {
-    let mut is = compile_to_instrs_inner(e, max_stack, &mut vec![]);
+    let mut is = compile_to_instrs_inner(e, &mut 0, max_stack, &mut vec![]);
     is.push(Instr::Ret);
     is
 }
@@ -643,7 +680,12 @@ fn space_needed(e: &SeqExp<()>) -> u32 {
         } => stack = std::cmp::max(space_needed(&thn), space_needed(&els)),
         SeqExp::FunDefs { decls, body, ann } => todo!(),
         SeqExp::InternalTailCall(_, _, _) => todo!(),
-        SeqExp::ExternalCall { fun_name, args, is_tail, ann } => todo!(),
+        SeqExp::ExternalCall {
+            fun_name,
+            args,
+            is_tail,
+            ann,
+        } => todo!(),
     }
     if stack % 2 == 0 {
         stack += 1;
@@ -685,9 +727,10 @@ fn error_handle_instr(e: &SeqExp<()>) -> Vec<Instr> {
 
 pub fn compile_to_string<Span>(p: &SurfProg<Span>) -> Result<String, CompileErr<Span>>
 where
-    Span: Clone, {
+    Span: Clone,
+{
     check_prog(p)?;
-    let seq = sequentialize(p);
+    let seq = sequentialize(p, &mut 0);
     let max_stack = space_needed(&seq);
     let main_is = compile_to_instrs(&seq, max_stack);
 
