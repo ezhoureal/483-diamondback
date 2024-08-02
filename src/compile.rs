@@ -4,6 +4,8 @@ use crate::syntax::{Exp, FunDecl, ImmExp, Prim, SeqExp, SeqProg, SurfFunDecl, Su
 
 use std::collections::{HashMap, HashSet};
 use std::convert::{TryFrom, TryInto};
+use std::f32::consts::E;
+use std::hash::Hash;
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum CompileErr<Span> {
@@ -58,17 +60,22 @@ pub fn check_prog<Span>(p: &SurfProg<Span>) -> Result<(), CompileErr<Span>>
 where
     Span: Clone,
 {
-    let mut appeared = HashSet::<String>::new();
-    let res = check_prog_inner(p, &mut appeared);
+    let res = check_prog_inner(p, &HashMap::new());
     res
 }
 
 static I63_MAX: i64 = 0x3F_FF_FF_FF_FF_FF_FF_FF;
 static I63_MIN: i64 = -0x40_00_00_00_00_00_00_00;
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum Symbol {
+    Func(Vec<String>),
+    Var,
+}
+
 fn check_prog_inner<Span>(
     e: &Exp<Span>,
-    symbols: &mut HashSet<String>,
+    symbols: &HashMap<String, Symbol>,
 ) -> Result<(), CompileErr<Span>>
 where
     Span: Clone,
@@ -84,9 +91,15 @@ where
             Ok(())
         }
         Exp::Var(name, ann) => {
-            if !symbols.contains(name) {
+            if !symbols.contains_key(name) {
                 return Err(CompileErr::UnboundVariable {
                     unbound: name.clone(),
+                    location: ann.clone(),
+                });
+            }
+            if let Symbol::Func(_) = symbols[name] {
+                return Err(CompileErr::FunctionUsedAsValue {
+                    function_name: name.clone(),
                     location: ann.clone(),
                 });
             }
@@ -103,8 +116,9 @@ where
             body,
             ann,
         } => {
+            let mut scoped_symbols = symbols.clone();
+            let mut appeared = HashSet::new();
             for (name, value) in bindings {
-                let mut appeared = HashSet::new();
                 if appeared.contains(name) {
                     return Err(CompileErr::DuplicateBinding {
                         duplicated_name: name.clone(),
@@ -112,10 +126,10 @@ where
                     });
                 }
                 appeared.insert(name);
-                symbols.insert(name.clone());
-                check_prog_inner(value, symbols)?;
+                scoped_symbols.insert(name.clone(), Symbol::Var);
+                check_prog_inner(value, &scoped_symbols)?;
             }
-            check_prog_inner(body, symbols)
+            check_prog_inner(body, &scoped_symbols)
         }
         Exp::Bool(_, _) => Ok(()),
         Exp::If {
@@ -125,12 +139,56 @@ where
             ann,
         } => {
             check_prog_inner(cond, symbols)?;
-            check_prog_inner(&thn, &mut symbols.clone())?;
-            check_prog_inner(&els, &mut symbols.clone())?;
+            check_prog_inner(&thn, symbols)?;
+            check_prog_inner(&els, symbols)?;
             Ok(())
         }
-        Exp::FunDefs { decls, body, ann } => todo!(),
-        Exp::Call(_, _, _) => todo!(),
+        Exp::FunDefs { decls, body, ann } => {
+            let mut scoped_symbols = symbols.clone();
+            let mut mutual_funcs = HashSet::<String>::new();
+            for decl in decls {
+                if mutual_funcs.contains(&decl.name) {
+                    return Err(CompileErr::DuplicateFunName {
+                        duplicated_name: decl.name.clone(),
+                        location: ann.clone(),
+                    });
+                }
+                mutual_funcs.insert(decl.name.clone());
+                scoped_symbols.insert(decl.name.clone(), Symbol::Func(decl.parameters.clone()));
+                check_prog_inner(&decl.body, &scoped_symbols)?;
+            }
+            check_prog_inner(body, &scoped_symbols)
+        }
+        Exp::Call(func, params, ann) => {
+            if !symbols.contains_key(func) {
+                return Err(CompileErr::UndefinedFunction {
+                    undefined: func.clone(),
+                    location: ann.clone(),
+                });
+            }
+            match &symbols[func] {
+                Symbol::Func(decl_params) => {
+                    if params.len() != decl_params.len() {
+                        return Err(CompileErr::FunctionCalledWrongArity {
+                            function_name: func.clone(),
+                            correct_arity: decl_params.len(),
+                            arity_used: params.len(),
+                            location: ann.clone(),
+                        });
+                    }
+                }
+                Symbol::Var => {
+                    return Err(CompileErr::ValueUsedAsFunction {
+                        variable_name: func.clone(),
+                        location: ann.clone(),
+                    });
+                }
+            }
+            for p in params {
+                check_prog_inner(p, &symbols)?;
+            }
+            Ok(())
+        }
         Exp::InternalTailCall(_, _, _) => todo!(),
         Exp::ExternalCall {
             fun_name,
@@ -730,9 +788,9 @@ where
     Span: Clone,
 {
     check_prog(p)?;
-    let unique_p = uniquify(&p, &mut HashMap::new(), &mut 0);
-    let (decls, main) = lambda_lift(&unique_p);
-    let program = seq_prog(&decls, &main);
+    // let unique_p = uniquify(&p, &mut HashMap::new(), &mut 0);
+    // let (decls, main) = lambda_lift(&unique_p);
+    // let program = seq_prog(&decls, &main);
 
     let seq = sequentialize(p, &mut 0);
     let max_stack = space_needed(&seq);
