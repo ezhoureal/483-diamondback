@@ -1,5 +1,8 @@
 use crate::asm::instrs_to_string;
 use crate::asm::{Arg32, Arg64, BinArgs, Instr, Loc, MemRef, MovArgs, Reg, Reg32};
+use crate::checker;
+use crate::sequentializer;
+use crate::lambda_lift;
 use crate::syntax::{Exp, FunDecl, ImmExp, Prim, SeqExp, SeqProg, SurfFunDecl, SurfProg};
 
 use std::collections::{HashMap, HashSet};
@@ -56,317 +59,12 @@ pub enum CompileErr<Span> {
     },
 }
 
-pub fn check_prog<Span>(p: &SurfProg<Span>) -> Result<(), CompileErr<Span>>
-where
-    Span: Clone,
-{
-    let res = check_prog_inner(p, &HashMap::new());
-    res
-}
-
-static I63_MAX: i64 = 0x3F_FF_FF_FF_FF_FF_FF_FF;
-static I63_MIN: i64 = -0x40_00_00_00_00_00_00_00;
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-enum Symbol {
-    Func(usize),
-    Var,
-}
-
-fn check_prog_inner<Span>(
-    e: &Exp<Span>,
-    symbols: &HashMap<String, Symbol>,
-) -> Result<(), CompileErr<Span>>
-where
-    Span: Clone,
-{
-    match e {
-        Exp::Num(i, ann) => {
-            if *i > I63_MAX || *i < I63_MIN {
-                return Err(CompileErr::Overflow {
-                    num: *i,
-                    location: ann.clone(),
-                });
-            }
-            Ok(())
-        }
-        Exp::Var(name, ann) => {
-            if !symbols.contains_key(name) {
-                return Err(CompileErr::UnboundVariable {
-                    unbound: name.clone(),
-                    location: ann.clone(),
-                });
-            }
-            if let Symbol::Func(_) = symbols[name] {
-                return Err(CompileErr::FunctionUsedAsValue {
-                    function_name: name.clone(),
-                    location: ann.clone(),
-                });
-            }
-            Ok(())
-        }
-        Exp::Prim(_, exps, _) => {
-            for e in exps {
-                check_prog_inner(e, symbols)?;
-            }
-            Ok(())
-        }
-        Exp::Let {
-            bindings,
-            body,
-            ann,
-        } => {
-            let mut scoped_symbols = symbols.clone();
-            let mut appeared = HashSet::new();
-            for (name, value) in bindings {
-                if appeared.contains(name) {
-                    return Err(CompileErr::DuplicateBinding {
-                        duplicated_name: name.clone(),
-                        location: ann.clone(),
-                    });
-                }
-                appeared.insert(name);
-                scoped_symbols.insert(name.clone(), Symbol::Var);
-                check_prog_inner(value, &scoped_symbols)?;
-            }
-            check_prog_inner(body, &scoped_symbols)
-        }
-        Exp::Bool(_, _) => Ok(()),
-        Exp::If {
-            cond,
-            thn,
-            els,
-            ann,
-        } => {
-            check_prog_inner(cond, symbols)?;
-            check_prog_inner(&thn, symbols)?;
-            check_prog_inner(&els, symbols)?;
-            Ok(())
-        }
-        Exp::FunDefs { decls, body, ann } => {
-            let mut scoped_symbols = symbols.clone();
-            let mut mutual_funcs = HashSet::<String>::new();
-            for decl in decls {
-                if mutual_funcs.contains(&decl.name) {
-                    return Err(CompileErr::DuplicateFunName {
-                        duplicated_name: decl.name.clone(),
-                        location: ann.clone(),
-                    });
-                }
-                mutual_funcs.insert(decl.name.clone());
-                scoped_symbols.insert(decl.name.clone(), Symbol::Func(decl.parameters.len()));
-            }
-            for decl in decls {
-                for param in &decl.parameters {
-                    scoped_symbols.insert(param.clone(), Symbol::Var);
-                }
-                check_prog_inner(&decl.body, &scoped_symbols)?;
-            }
-            check_prog_inner(body, &scoped_symbols)
-        }
-        Exp::Call(func, params, ann) => {
-            if !symbols.contains_key(func) {
-                return Err(CompileErr::UndefinedFunction {
-                    undefined: func.clone(),
-                    location: ann.clone(),
-                });
-            }
-            match &symbols[func] {
-                Symbol::Func(param_size) => {
-                    if params.len() != *param_size {
-                        return Err(CompileErr::FunctionCalledWrongArity {
-                            function_name: func.clone(),
-                            correct_arity: *param_size,
-                            arity_used: params.len(),
-                            location: ann.clone(),
-                        });
-                    }
-                }
-                Symbol::Var => {
-                    return Err(CompileErr::ValueUsedAsFunction {
-                        variable_name: func.clone(),
-                        location: ann.clone(),
-                    });
-                }
-            }
-            for p in params {
-                check_prog_inner(p, &symbols)?;
-            }
-            Ok(())
-        }
-        Exp::InternalTailCall(_, _, _) => todo!(),
-        Exp::ExternalCall {
-            fun_name,
-            args,
-            is_tail,
-            ann,
-        } => todo!(),
-    }
-}
-
-fn try_flatten_prim1(p: &Prim, exp: &SeqExp<()>) -> Option<SeqExp<()>> {
-    match exp {
-        SeqExp::Imm(i, _) => Some(SeqExp::Prim(*p, vec![i.clone()], ())),
-        _ => None,
-    }
-}
-
-fn try_flatten_prim2(
-    p: &Prim,
-    exp1: &SeqExp<()>,
-    exp2: &SeqExp<()>,
-    counter: &mut u32,
-) -> Option<SeqExp<()>> {
-    if let SeqExp::Imm(i1, _) = exp1 {
-        if let SeqExp::Imm(i2, _) = exp2 {
-            return Some(SeqExp::Prim(*p, vec![i1.clone(), i2.clone()], ()));
-        }
-        *counter += 1;
-        let name2 = format!("#prim2_2_{}", counter);
-        return Some(SeqExp::Let {
-            var: name2.clone(),
-            bound_exp: Box::new(exp2.clone()),
-            body: Box::new(SeqExp::Prim(*p, vec![i1.clone(), ImmExp::Var(name2)], ())),
-            ann: (),
-        });
-    }
-    if let SeqExp::Imm(i2, _) = exp2 {
-        *counter += 1;
-        let name1 = format!("#prim2_1_{}", counter);
-
-        return Some(SeqExp::Let {
-            var: name1.clone(),
-            bound_exp: Box::new(exp1.clone()),
-            body: Box::new(SeqExp::Prim(*p, vec![ImmExp::Var(name1), i2.clone()], ())),
-            ann: (),
-        });
-    }
-    None
-}
-
-fn sequentialize<Span>(e: &Exp<Span>, counter: &mut u32) -> SeqExp<()> {
-    match e {
-        Exp::Bool(b, _) => SeqExp::Imm(ImmExp::Bool(*b), ()),
-        Exp::Num(i, _) => SeqExp::Imm(ImmExp::Num(*i), ()),
-        Exp::Var(s, _) => SeqExp::Imm(ImmExp::Var(s.clone()), ()),
-        Exp::Prim(p, exps, ann) => {
-            // Prim_1
-            if exps.len() == 1 {
-                let a = sequentialize(&exps[0], counter);
-                if let Some(flattened) = try_flatten_prim1(p, &a) {
-                    return flattened;
-                }
-                *counter += 1;
-                let name1 = format!("#prim1_{}", counter);
-                SeqExp::Let {
-                    var: name1.clone(),
-                    bound_exp: Box::new(a),
-                    ann: (),
-                    body: Box::new(SeqExp::Prim(*p, vec![ImmExp::Var(name1)], ())),
-                }
-            // Prim_2
-            } else {
-                let a = sequentialize(&exps[0], counter);
-                let b = sequentialize(&exps[1], counter);
-                if let Some(flattened) = try_flatten_prim2(p, &a, &b, counter) {
-                    return flattened;
-                }
-                *counter += 1;
-                let name1 = format!("#prim2_1_{}", counter);
-                let name2 = format!("#prim2_2_{}", counter);
-                SeqExp::Let {
-                    var: name1.clone(),
-                    bound_exp: Box::new(a),
-                    ann: (),
-                    body: Box::new(SeqExp::Let {
-                        var: name2.clone(),
-                        bound_exp: Box::new(b),
-                        ann: (),
-                        body: Box::new(SeqExp::Prim(
-                            *p,
-                            vec![ImmExp::Var(name1), ImmExp::Var(name2)],
-                            (),
-                        )),
-                    }),
-                }
-            }
-        }
-        Exp::Let {
-            bindings,
-            body,
-            ann: _,
-        } => {
-            let mut optionRes: Option<SeqExp<()>> = None;
-            for (var, exp) in bindings.iter().rev() {
-                optionRes = Some(SeqExp::Let {
-                    var: var.clone(),
-                    bound_exp: Box::new(sequentialize(&exp, counter)),
-                    body: if optionRes.is_some() {
-                        Box::new(optionRes.unwrap())
-                    } else {
-                        Box::new(sequentialize(body, counter))
-                    },
-                    ann: (),
-                })
-            }
-            optionRes.unwrap()
-        }
-        Exp::If {
-            cond,
-            thn,
-            els,
-            ann,
-        } => {
-            *counter += 1;
-            let var_name = format!("#if_{}", counter);
-            SeqExp::Let {
-                var: var_name.clone(),
-                bound_exp: Box::new(sequentialize(cond, counter)),
-                body: Box::new(SeqExp::If {
-                    cond: ImmExp::Var(var_name),
-                    thn: Box::new(sequentialize(thn, counter)),
-                    els: Box::new(sequentialize(els, counter)),
-                    ann: (),
-                }),
-                ann: (),
-            }
-        }
-        Exp::FunDefs { decls, body, ann } => todo!(),
-        Exp::Call(_, _, _) => todo!(),
-        Exp::InternalTailCall(_, _, _) => todo!(),
-        Exp::ExternalCall {
-            fun_name,
-            args,
-            is_tail,
-            ann,
-        } => todo!(),
-    }
-}
-
 // returns instruction to move imm to Rax
 fn imm_to_rax(imm: &ImmExp, stack: &[(&str, i32)]) -> Vec<Instr> {
     vec![Instr::Mov(MovArgs::ToReg(
         Reg::Rax,
         imm_to_arg64(imm, stack),
     ))]
-}
-
-/* Encapsulate imm as BinArgs, use case: the second parameter of prim */
-fn num_to_bin_args(imm: &ImmExp, stack: &[(&str, i32)]) -> BinArgs {
-    match &imm {
-        ImmExp::Num(i) => BinArgs::ToReg(Reg::Rax, Arg32::Signed((*i << 1).try_into().unwrap())),
-        ImmExp::Var(s) => {
-            let offset = get(stack, &s).unwrap();
-            BinArgs::ToReg(
-                Reg::Rax,
-                Arg32::Mem(MemRef {
-                    reg: Reg::Rsp,
-                    offset: offset,
-                }),
-            )
-        }
-        ImmExp::Bool(_) => todo!(), // not supported
-    }
 }
 
 fn get<T>(env: &[(&str, T)], x: &str) -> Option<T>
@@ -788,16 +486,24 @@ fn error_handle_instr(e: &SeqExp<()>) -> Vec<Instr> {
     ]
 }
 
+pub fn check_prog<Span>(p: &SurfProg<Span>) -> Result<(), CompileErr<Span>>
+where
+    Span: Clone,
+{
+    let res = checker::check_prog(p, &HashMap::new());
+    res
+}
+
 pub fn compile_to_string<Span>(p: &SurfProg<Span>) -> Result<String, CompileErr<Span>>
 where
     Span: Clone,
 {
-    check_prog(p)?;
-    let unique_p = uniquify(&p, &mut HashMap::new(), &mut 0);
+    checker::check_prog(p, &HashMap::new())?;
+    let unique_p = lambda_lift::uniquify(&p, &mut HashMap::new(), &mut 0);
     // let (decls, main) = lambda_lift(&unique_p);
     // let program = seq_prog(&decls, &main);
 
-    let seq = sequentialize(p, &mut 0);
+    let seq = sequentializer::seq(p, &mut 0);
     let max_stack = space_needed(&seq);
     let main_is = compile_to_instrs(&seq, max_stack);
 
@@ -817,121 +523,6 @@ start_here:
     );
     println!("{}", res);
     Ok(res)
-}
-
-fn uniquify<Span>(e: &Exp<Span>, mapping: &HashMap<String, String>, counter: &mut u32) -> Exp<()> {
-    match e {
-        Exp::Let {
-            bindings,
-            body,
-            ann,
-        } => {
-            let mut scoped_mapping = mapping.clone();
-            let mut_bind = bindings
-                .iter()
-                .map(|(var, value)| {
-                    *counter += 1;
-                    let new_var = format!("{}", counter);
-                    let mut_exp = uniquify(value, &scoped_mapping, counter);
-                    scoped_mapping.insert(var.to_string(), new_var.clone());
-                    return (new_var, mut_exp);
-                })
-                .collect();
-            Exp::Let {
-                bindings: mut_bind,
-                body: Box::new(uniquify(&body, &scoped_mapping, counter)),
-                ann: (),
-            }
-        }
-        Exp::FunDefs { decls, body, ann } => {
-            let mut scoped_mapping = mapping.clone();
-            for decl in decls {
-                *counter += 1;
-                scoped_mapping.insert(decl.name.to_string(), format!("{}", counter));
-            }
-            let mut uniq_decls = vec![];
-            for decl in decls {
-                let mut func_scope_map = scoped_mapping.clone();
-                for param in &decl.parameters {
-                    *counter += 1;
-                    func_scope_map.insert(param.to_string(), format!("{}", counter));
-                }
-                uniq_decls.push(FunDecl {
-                    name: scoped_mapping[&decl.name].clone(),
-                    parameters: decl
-                        .parameters
-                        .iter()
-                        .map(|param| func_scope_map[param].clone())
-                        .collect(),
-                    body: uniquify(&body, &func_scope_map, counter),
-                    ann: (),
-                })
-            }
-            Exp::FunDefs {
-                decls: uniq_decls,
-                body: Box::new(uniquify(&body, &scoped_mapping, counter)),
-                ann: (),
-            }
-        }
-        Exp::Var(v, _) => Exp::Var(mapping[v].clone(), ()),
-        Exp::Num(i, _) => Exp::Num(*i, ()),
-        Exp::Bool(b, _) => Exp::Bool(*b, ()),
-        Exp::Prim(op, subjects, _) => {
-            let uniq_sub = subjects
-                .iter()
-                .map(|s| Box::new(uniquify(s, mapping, counter)))
-                .collect();
-            Exp::Prim(*op, uniq_sub, ())
-        }
-        Exp::If {
-            cond,
-            thn,
-            els,
-            ann: _,
-        } => Exp::If {
-            cond: Box::new(uniquify(&cond, mapping, counter)),
-            thn: Box::new(uniquify(&thn, mapping, counter)),
-            els: Box::new(uniquify(&els, mapping, counter)),
-            ann: (),
-        },
-        Exp::Call(func, params, _) => {
-            let uniq_params = params
-                .iter()
-                .map(|s| uniquify(s, mapping, counter))
-                .collect();
-            Exp::Call(mapping[func].clone(), uniq_params, ())
-        }
-        Exp::InternalTailCall(_, _, _) => Exp::InternalTailCall(String::new(), vec![], ()),
-        Exp::ExternalCall {
-            fun_name: _,
-            args: _,
-            is_tail,
-            ann: _,
-        } => Exp::ExternalCall {
-            fun_name: String::new(),
-            args: vec![],
-            is_tail: *is_tail,
-            ann: (),
-        },
-    }
-}
-
-// Identify which functions should be lifted to the top level
-fn should_lift(p: &Exp<()>) -> HashSet<String> {
-    panic!("NYI: should lift")
-}
-
-// Lift some functions to global definitions
-fn lambda_lift(p: &Exp<()>) -> (Vec<FunDecl<Exp<()>, ()>>, Exp<()>) {
-    match p {
-        Exp::Var(_, _) => todo!(),
-        Exp::Prim(_, _, _) => todo!(),
-        Exp::Let { bindings, body, ann } => todo!(),
-        Exp::If { cond, thn, els, ann } => todo!(),
-        Exp::FunDefs { decls, body, ann } => todo!(),
-        Exp::Call(_, _, _) => todo!(),
-        _ => (vec![], p.clone())
-    }
 }
 
 fn seq_prog(decls: &[FunDecl<Exp<()>, ()>], p: &Exp<()>) -> SeqProg<()> {

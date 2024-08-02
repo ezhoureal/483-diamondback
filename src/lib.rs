@@ -1,7 +1,10 @@
 pub mod asm;
+mod checker;
 pub mod compile;
 pub mod interp;
+mod lambda_lift;
 pub mod parser;
 pub mod runner;
+mod sequentializer;
 pub mod span;
 pub mod syntax;
