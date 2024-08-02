@@ -2,8 +2,7 @@ use std::collections::{HashMap, HashSet};
 
 use crate::syntax::*;
 
-
-pub fn uniquify<Span>(e: &Exp<Span>, mapping: &HashMap<String, String>, counter: &mut u32) -> Exp<()> {
+fn uniquify<Span>(e: &Exp<Span>, mapping: &HashMap<String, String>, counter: &mut u32) -> Exp<()> {
     match e {
         Exp::Let {
             bindings,
@@ -106,23 +105,50 @@ fn should_lift(p: &Exp<()>) -> HashSet<String> {
 }
 
 // Lift some functions to global definitions
-fn lambda_lift(p: &Exp<()>) -> (Vec<FunDecl<Exp<()>, ()>>, Exp<()>) {
-    match p {
-        Exp::Var(_, _) => todo!(),
-        Exp::Prim(_, _, _) => todo!(),
+pub fn lambda_lift<Ann>(p: &Exp<Ann>) -> (Vec<FunDecl<Exp<()>, ()>>, Exp<()>) {
+    let unique_p = uniquify(&p, &mut HashMap::new(), &mut 0);
+    match unique_p {
+        Exp::Prim(p, exps, _) => {
+            let mut functions = vec![];
+            let mut new_exps = vec![];
+            for exp in exps {
+                let (f, new_exp) = lambda_lift(&exp);
+                functions.extend(f);
+                new_exps.push(Box::new(new_exp));
+            }
+            (functions, Exp::Prim(p, new_exps, ()))
+        }
         Exp::Let {
             bindings,
             body,
             ann,
-        } => todo!(),
+        } => {
+            let mut functions = vec![];
+            let mut new_bindings = vec![];
+            for bind in bindings {
+                let (f, new_bind) = lambda_lift(&bind.1);
+                functions.extend(f);
+                new_bindings.push((bind.0, new_bind));
+            }
+            let (f, new_bod) = lambda_lift(&body);
+            functions.extend(f);
+            (functions, Exp::Let { bindings: new_bindings, body: Box::new(new_bod), ann: () })
+        }
         Exp::If {
             cond,
             thn,
             els,
             ann,
-        } => todo!(),
+        } => {
+            let (mut functions, new_cond) = lambda_lift(&cond);
+            let (f_2, new_thn) = lambda_lift(&thn);
+            let (f_3, new_els) = lambda_lift(&els);
+            functions.extend(f_2);
+            functions.extend(f_3);
+            (functions, Exp::If { cond: Box::new(new_cond), thn: Box::new(new_thn), els: Box::new(new_els), ann: () })
+        },
         Exp::FunDefs { decls, body, ann } => todo!(),
         Exp::Call(_, _, _) => todo!(),
-        _ => (vec![], p.clone()),
+        _ => (vec![], unique_p.clone()),
     }
 }

@@ -2,7 +2,7 @@ use crate::asm::instrs_to_string;
 use crate::asm::{Arg32, Arg64, BinArgs, Instr, Loc, MemRef, MovArgs, Reg, Reg32};
 use crate::checker;
 use crate::sequentializer;
-use crate::lambda_lift;
+use crate::lambda_lift::lambda_lift;
 use crate::syntax::{Exp, FunDecl, ImmExp, Prim, SeqExp, SeqProg, SurfFunDecl, SurfProg};
 
 use std::collections::{HashMap, HashSet};
@@ -499,7 +499,7 @@ where
     Span: Clone,
 {
     checker::check_prog(p, &HashMap::new())?;
-    let unique_p = lambda_lift::uniquify(&p, &mut HashMap::new(), &mut 0);
+    let unique_p = lambda_lift(&p);
     // let (decls, main) = lambda_lift(&unique_p);
     // let program = seq_prog(&decls, &main);
 
