@@ -69,7 +69,7 @@ static I63_MIN: i64 = -0x40_00_00_00_00_00_00_00;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum Symbol {
-    Func(Vec<String>),
+    Func(usize),
     Var,
 }
 
@@ -154,7 +154,12 @@ where
                     });
                 }
                 mutual_funcs.insert(decl.name.clone());
-                scoped_symbols.insert(decl.name.clone(), Symbol::Func(decl.parameters.clone()));
+                scoped_symbols.insert(decl.name.clone(), Symbol::Func(decl.parameters.len()));
+            }
+            for decl in decls {
+                for param in &decl.parameters {
+                    scoped_symbols.insert(param.clone(), Symbol::Var);
+                }
                 check_prog_inner(&decl.body, &scoped_symbols)?;
             }
             check_prog_inner(body, &scoped_symbols)
@@ -167,11 +172,11 @@ where
                 });
             }
             match &symbols[func] {
-                Symbol::Func(decl_params) => {
-                    if params.len() != decl_params.len() {
+                Symbol::Func(param_size) => {
+                    if params.len() != *param_size {
                         return Err(CompileErr::FunctionCalledWrongArity {
                             function_name: func.clone(),
-                            correct_arity: decl_params.len(),
+                            correct_arity: *param_size,
                             arity_used: params.len(),
                             location: ann.clone(),
                         });
@@ -842,25 +847,29 @@ fn uniquify<Span>(e: &Exp<Span>, mapping: &HashMap<String, String>, counter: &mu
             let mut scoped_mapping = mapping.clone();
             for decl in decls {
                 *counter += 1;
-                let new_name = format!("{}", counter);
-                scoped_mapping.insert(decl.name.to_string(), new_name.clone());
+                scoped_mapping.insert(decl.name.to_string(), format!("{}", counter));
             }
-            let uniq_decls = decls
-                .iter()
-                .map(|decl| FunDecl {
+            let mut uniq_decls = vec![];
+            for decl in decls {
+                let mut func_scope_map = scoped_mapping.clone();
+                for param in &decl.parameters {
+                    *counter += 1;
+                    func_scope_map.insert(param.to_string(), format!("{}", counter));
+                }
+                uniq_decls.push(FunDecl {
                     name: scoped_mapping[&decl.name].clone(),
                     parameters: decl
                         .parameters
                         .iter()
-                        .map(|param| scoped_mapping[param].clone())
+                        .map(|param| func_scope_map[param].clone())
                         .collect(),
-                    body: uniquify(&body, &scoped_mapping, counter),
+                    body: uniquify(&body, &func_scope_map, counter),
                     ann: (),
                 })
-                .collect();
+            }
             Exp::FunDefs {
                 decls: uniq_decls,
-                body: Box::new(uniquify(&body, mapping, counter)),
+                body: Box::new(uniquify(&body, &scoped_mapping, counter)),
                 ann: (),
             }
         }
@@ -908,13 +917,21 @@ fn uniquify<Span>(e: &Exp<Span>, mapping: &HashMap<String, String>, counter: &mu
 }
 
 // Identify which functions should be lifted to the top level
-fn should_lift<Ann>(p: &Exp<Ann>) -> HashSet<String> {
+fn should_lift(p: &Exp<()>) -> HashSet<String> {
     panic!("NYI: should lift")
 }
 
 // Lift some functions to global definitions
-fn lambda_lift<Ann>(p: &Exp<Ann>) -> (Vec<FunDecl<Exp<()>, ()>>, Exp<()>) {
-    panic!("NYI: lambda_lift")
+fn lambda_lift(p: &Exp<()>) -> (Vec<FunDecl<Exp<()>, ()>>, Exp<()>) {
+    match p {
+        Exp::Var(_, _) => todo!(),
+        Exp::Prim(_, _, _) => todo!(),
+        Exp::Let { bindings, body, ann } => todo!(),
+        Exp::If { cond, thn, els, ann } => todo!(),
+        Exp::FunDefs { decls, body, ann } => todo!(),
+        Exp::Call(_, _, _) => todo!(),
+        _ => (vec![], p.clone())
+    }
 }
 
 fn seq_prog(decls: &[FunDecl<Exp<()>, ()>], p: &Exp<()>) -> SeqProg<()> {
