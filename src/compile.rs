@@ -788,7 +788,7 @@ where
     Span: Clone,
 {
     check_prog(p)?;
-    // let unique_p = uniquify(&p, &mut HashMap::new(), &mut 0);
+    let unique_p = uniquify(&p, &mut HashMap::new(), &mut 0);
     // let (decls, main) = lambda_lift(&unique_p);
     // let program = seq_prog(&decls, &main);
 
@@ -827,8 +827,9 @@ fn uniquify<Span>(e: &Exp<Span>, mapping: &HashMap<String, String>, counter: &mu
                 .map(|(var, value)| {
                     *counter += 1;
                     let new_var = format!("{}", counter);
-                    scoped_mapping.insert(new_var.clone(), var.to_string());
-                    return (new_var, uniquify(value, mapping, counter));
+                    let mut_exp = uniquify(value, &scoped_mapping, counter);
+                    scoped_mapping.insert(var.to_string(), new_var.clone());
+                    return (new_var, mut_exp);
                 })
                 .collect();
             Exp::Let {
@@ -842,7 +843,7 @@ fn uniquify<Span>(e: &Exp<Span>, mapping: &HashMap<String, String>, counter: &mu
             for decl in decls {
                 *counter += 1;
                 let new_name = format!("{}", counter);
-                scoped_mapping.insert(new_name.clone(), decl.name.to_string());
+                scoped_mapping.insert(decl.name.to_string(), new_name.clone());
             }
             let uniq_decls = decls
                 .iter()
