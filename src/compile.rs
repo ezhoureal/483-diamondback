@@ -1,8 +1,8 @@
 use crate::asm::instrs_to_string;
 use crate::asm::{Arg32, Arg64, BinArgs, Instr, Loc, MemRef, MovArgs, Reg, Reg32};
 use crate::checker;
-use crate::sequentializer;
 use crate::lambda_lift::lambda_lift;
+use crate::sequentializer;
 use crate::syntax::{Exp, FunDecl, ImmExp, Prim, SeqExp, SeqProg, SurfFunDecl, SurfProg};
 
 use std::collections::{HashMap, HashSet};
@@ -500,14 +500,21 @@ where
 {
     checker::check_prog(p, &HashMap::new())?;
     let (global_functions, main) = lambda_lift(&p);
-    // let (decls, main) = lambda_lift(&unique_p);
-    // let program = seq_prog(&decls, &main);
+    let program = sequentializer::seq_prog(&global_functions, &main);
 
     let seq = sequentializer::seq(p, &mut 0);
-    let max_stack = space_needed(&seq);
-    let main_is = compile_to_instrs(&seq, max_stack);
 
-    let main_str = instrs_to_string(&main_is);
+    let functions_is: Vec<String> = program
+        .funs
+        .iter()
+        .map(|f| {
+            let max_stack = todo!();
+            instrs_to_string(&compile_to_instrs(&f.body, max_stack))
+        })
+        .collect();
+    let max_stack = space_needed(&seq);
+    let main_is = instrs_to_string(&compile_to_instrs(&seq, max_stack));
+
     let res = format!(
         "\
         section .text
@@ -519,12 +526,9 @@ start_here:
 {}       
 ",
         instrs_to_string(&error_handle_instr(&seq)),
-        main_str
+        // &functions_is,
+        main_is
     );
     println!("{}", res);
     Ok(res)
-}
-
-fn seq_prog(decls: &[FunDecl<Exp<()>, ()>], p: &Exp<()>) -> SeqProg<()> {
-    panic!("NYI: seq_prog")
 }

@@ -40,52 +40,54 @@ fn try_flatten_prim2(
     None
 }
 
-pub fn seq<Span>(e: &Exp<Span>, counter: &mut u32) -> SeqExp<()> {
+fn parse_param_exps<Span>(
+    params: &[Exp<Span>],
+    counter: &mut u32,
+) -> (Vec<ImmExp>, Vec<(String, SeqExp<()>)>)
+where
+    Span: Clone,
+{
+    let mut let_bindings = vec![];
+    let imm_params = params
+        .iter()
+        .map(|param| {
+            let seq_param = seq(param, counter);
+            if let SeqExp::Imm(i, _) = seq_param {
+                return i;
+            }
+            let var = format!("#var_{}", counter);
+            let_bindings.push((var.clone(), seq_param));
+            *counter += 1;
+            return ImmExp::Var(var);
+        })
+        .collect();
+    (imm_params, let_bindings)
+}
+
+fn generate_nested_let(bindings: &[(String, SeqExp<()>)], body: SeqExp<()>) -> SeqExp<()> {
+    if bindings.is_empty() {
+        return body;
+    }
+    SeqExp::Let {
+        var: bindings[0].0.clone(),
+        bound_exp: Box::new(bindings[0].1.clone()),
+        body: Box::new(generate_nested_let(&bindings[1..], body)),
+        ann: (),
+    }
+}
+
+pub fn seq<Span>(e: &Exp<Span>, counter: &mut u32) -> SeqExp<()>
+where
+    Span: Clone,
+{
     match e {
         Exp::Bool(b, _) => SeqExp::Imm(ImmExp::Bool(*b), ()),
         Exp::Num(i, _) => SeqExp::Imm(ImmExp::Num(*i), ()),
         Exp::Var(s, _) => SeqExp::Imm(ImmExp::Var(s.clone()), ()),
         Exp::Prim(p, exps, ann) => {
-            // Prim_1
-            if exps.len() == 1 {
-                let a = seq(&exps[0], counter);
-                if let Some(flattened) = try_flatten_prim1(p, &a) {
-                    return flattened;
-                }
-                *counter += 1;
-                let name1 = format!("#prim1_{}", counter);
-                SeqExp::Let {
-                    var: name1.clone(),
-                    bound_exp: Box::new(a),
-                    ann: (),
-                    body: Box::new(SeqExp::Prim(*p, vec![ImmExp::Var(name1)], ())),
-                }
-            // Prim_2
-            } else {
-                let a = seq(&exps[0], counter);
-                let b = seq(&exps[1], counter);
-                if let Some(flattened) = try_flatten_prim2(p, &a, &b, counter) {
-                    return flattened;
-                }
-                *counter += 1;
-                let name1 = format!("#prim2_1_{}", counter);
-                let name2 = format!("#prim2_2_{}", counter);
-                SeqExp::Let {
-                    var: name1.clone(),
-                    bound_exp: Box::new(a),
-                    ann: (),
-                    body: Box::new(SeqExp::Let {
-                        var: name2.clone(),
-                        bound_exp: Box::new(b),
-                        ann: (),
-                        body: Box::new(SeqExp::Prim(
-                            *p,
-                            vec![ImmExp::Var(name1), ImmExp::Var(name2)],
-                            (),
-                        )),
-                    }),
-                }
-            }
+            let params: Vec<Exp<Span>> = exps.iter().map(|exp| (*exp.clone())).collect();
+            let (imm_params, let_bindings) = parse_param_exps(&params, counter);
+            generate_nested_let(&let_bindings, SeqExp::Prim(*p, imm_params, ()))
         }
         Exp::Let {
             bindings,
@@ -127,14 +129,55 @@ pub fn seq<Span>(e: &Exp<Span>, counter: &mut u32) -> SeqExp<()> {
                 ann: (),
             }
         }
-        Exp::FunDefs { decls, body, ann } => todo!(),
+        Exp::FunDefs { decls, body, ann } => {
+            let seq_decls = decls
+                .iter()
+                .map(|decl| SeqFunDecl {
+                    name: decl.name.clone(),
+                    parameters: decl.parameters.clone(),
+                    body: seq(&decl.body, counter),
+                    ann: (),
+                })
+                .collect();
+            SeqExp::FunDefs {
+                decls: seq_decls,
+                body: Box::new(seq(&body, counter)),
+                ann: (),
+            }
+        }
         Exp::Call(_, _, _) => todo!(),
-        Exp::InternalTailCall(_, _, _) => todo!(),
+        Exp::InternalTailCall(func, params, _) => {
+            let (imm_params, let_bindings) = parse_param_exps(params, counter);
+            generate_nested_let(
+                &let_bindings,
+                SeqExp::InternalTailCall(func.clone(), imm_params, ()),
+            )
+        }
         Exp::ExternalCall {
             fun_name,
             args,
             is_tail,
             ann,
         } => todo!(),
+    }
+}
+
+pub fn seq_prog(decls: &[FunDecl<Exp<()>, ()>], p: &Exp<()>) -> SeqProg<()> {
+    let mut counter = 0;
+    SeqProg {
+        funs: decls
+            .iter()
+            .map(|decl| {
+                let seq_body = seq(&decl.body, &mut counter);
+                FunDecl {
+                    name: decl.name.clone(),
+                    parameters: decl.parameters.clone(),
+                    body: seq_body,
+                    ann: (),
+                }
+            })
+            .collect(),
+        main: seq(p, &mut counter),
+        ann: (),
     }
 }
