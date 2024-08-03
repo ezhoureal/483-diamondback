@@ -99,60 +99,67 @@ fn uniquify<Span>(e: &Exp<Span>, mapping: &HashMap<String, String>, counter: &mu
 
 // [locals] local variables in the function body
 // [captured] returns all unbound variables in the function body
-fn search_unbound(e: &Exp<()>, locals: &mut HashSet<String>, unbound: &mut HashSet<String>) {
-    match e {
-        Exp::Var(s, _) => {
-            if !locals.contains(s) {
-                unbound.insert(s.clone());
-            }
-        }
-        Exp::Prim(_, exps, _) => {
-            for exp in exps {
-                search_unbound(exp, locals, unbound);
-            }
-        }
-        Exp::Let {
-            bindings,
-            body,
-            ann,
-        } => {
-            for bind in bindings {
-                locals.insert(bind.0.clone());
-                search_unbound(&bind.1, locals, unbound);
-            }
-            search_unbound(&body, locals, unbound);
-        }
-        Exp::If {
-            cond,
-            thn,
-            els,
-            ann,
-        } => {
-            search_unbound(cond, locals, unbound);
-            search_unbound(thn, locals, unbound);
-            search_unbound(els, locals, unbound);
-        }
-        Exp::FunDefs { decls, body, ann } => {
-            for decl in decls {
-                search_unbound(&decl.body, locals, unbound);
-            }
-            search_unbound(body, locals, unbound);
-        }
-        Exp::Call(func, params, _) => {
-            for param in params {
-                search_unbound(param, locals, unbound);
-            }
-        }
-        _ => {}
-    }
-}
+// [force_global] true if parent function is already lifted
+// fn search_unbound(
+//     self_func: &str,
+//     e: &Exp<()>,
+//     locals: &mut HashSet<String>,
+//     unbound: &mut HashSet<String>,
+// ) {
+//     match e {
+//         Exp::Var(s, _) => {
+//             if !locals.contains(s) {
+//                 unbound.insert(s.clone());
+//             }
+//         }
+//         Exp::Prim(_, exps, _) => {
+//             for exp in exps {
+//                 search_unbound(self_func, exp, locals, unbound);
+//             }
+//         }
+//         Exp::Let {
+//             bindings,
+//             body,
+//             ann,
+//         } => {
+//             for bind in bindings {
+//                 locals.insert(bind.0.clone());
+//                 search_unbound(self_func, &bind.1, locals, unbound);
+//             }
+//             search_unbound(self_func, &body, locals, unbound);
+//         }
+//         Exp::If {
+//             cond,
+//             thn,
+//             els,
+//             ann,
+//         } => {
+//             search_unbound(self_func, cond, locals, unbound);
+//             search_unbound(self_func, thn, locals, unbound);
+//             search_unbound(self_func, els, locals, unbound);
+//         }
+//         Exp::FunDefs { decls, body, ann } => {
+//             for decl in decls {
+//                 search_unbound(self_func, &decl.body, locals, unbound);
+//             }
+//             search_unbound(self_func, body, locals, unbound);
+//         }
+//         Exp::Call(func, params, _) => {
+//             // jump into other functions
+//             for param in params {
+//                 search_unbound(self_func, param, locals, unbound);
+//             }
+//         }
+//         _ => {}
+//     }
+// }
 
-fn rewrite_params(e: &Exp<()>, globals: &HashMap<String, FunDecl<Exp<()>, ()>>) -> Exp<()> {
+fn rewrite_call_params(e: &Exp<()>, globals: &HashMap<String, FunDecl<Exp<()>, ()>>) -> Exp<()> {
     match e {
         Exp::Prim(p, exps, _) => Exp::Prim(
             *p,
             exps.iter()
-                .map(|exp| Box::new(rewrite_params(exp, globals)))
+                .map(|exp| Box::new(rewrite_call_params(exp, globals)))
                 .collect(),
             (),
         ),
@@ -163,9 +170,9 @@ fn rewrite_params(e: &Exp<()>, globals: &HashMap<String, FunDecl<Exp<()>, ()>>) 
         } => Exp::Let {
             bindings: bindings
                 .iter()
-                .map(|bind| (bind.0.clone(), rewrite_params(&bind.1, globals)))
+                .map(|bind| (bind.0.clone(), rewrite_call_params(&bind.1, globals)))
                 .collect(),
-            body: Box::new(rewrite_params(body, globals)),
+            body: Box::new(rewrite_call_params(body, globals)),
             ann: (),
         },
         Exp::If {
@@ -174,21 +181,22 @@ fn rewrite_params(e: &Exp<()>, globals: &HashMap<String, FunDecl<Exp<()>, ()>>) 
             els,
             ann,
         } => Exp::If {
-            cond: Box::new(rewrite_params(cond, globals)),
-            thn: Box::new(rewrite_params(thn, globals)),
-            els: Box::new(rewrite_params(els, globals)),
+            cond: Box::new(rewrite_call_params(cond, globals)),
+            thn: Box::new(rewrite_call_params(thn, globals)),
+            els: Box::new(rewrite_call_params(els, globals)),
             ann: (),
         },
         Exp::FunDefs { decls, body, ann } => Exp::FunDefs {
-            decls: decls.iter().map(
-                |decl| FunDecl {
+            decls: decls
+                .iter()
+                .map(|decl| FunDecl {
                     name: decl.name.clone(),
                     parameters: decl.parameters.clone(),
-                    body: rewrite_params(&decl.body, globals),
+                    body: rewrite_call_params(&decl.body, globals),
                     ann: (),
-                }
-            ).collect(),
-            body: Box::new(rewrite_params(body, globals)),
+                })
+                .collect(),
+            body: Box::new(rewrite_call_params(body, globals)),
             ann: (),
         },
         Exp::Call(func, params, _) => {
@@ -196,21 +204,22 @@ fn rewrite_params(e: &Exp<()>, globals: &HashMap<String, FunDecl<Exp<()>, ()>>) 
             for p in globals[func].parameters.iter().skip(params.len()) {
                 mod_params.push(Exp::Var(p.clone(), ()))
             }
-            Exp::Call(func.to_string(), mod_params, ())},
+            Exp::Call(func.to_string(), mod_params, ())
+        }
         _ => e.clone(),
     }
 }
 
-fn lambda_lift_inner(
+fn lift_functions(
     e: &Exp<()>,
+    vars: &HashSet<String>,
     globals: &mut HashMap<String, FunDecl<Exp<()>, ()>>,
-    force_global: bool,
 ) -> Exp<()> {
     match e {
         Exp::Prim(p, exps, _) => {
             let mut new_exps = vec![];
             for exp in exps {
-                new_exps.push(Box::new(lambda_lift_inner(&exp, globals, force_global)));
+                new_exps.push(Box::new(lift_functions(&exp, vars, globals)));
             }
             Exp::Prim(*p, new_exps, ())
         }
@@ -219,15 +228,17 @@ fn lambda_lift_inner(
             body,
             ann,
         } => {
-            let mut new_bindings = vec![];
-            for bind in bindings {
-                let new_bind = lambda_lift_inner(&bind.1, globals, force_global);
-                new_bindings.push((bind.0.clone(), new_bind));
-            }
-            let new_bod = lambda_lift_inner(&body, globals, force_global);
+            let mut scoped_vars = vars.clone();
             Exp::Let {
-                bindings: new_bindings,
-                body: Box::new(new_bod),
+                bindings: bindings
+                    .iter()
+                    .map(|bind| {
+                        scoped_vars.insert(bind.0.clone());
+                        let new_bind = lift_functions(&bind.1, &scoped_vars, globals);
+                        (bind.0.clone(), new_bind)
+                    })
+                    .collect(),
+                body: Box::new(lift_functions(&body, &scoped_vars, globals)),
                 ann: (),
             }
         }
@@ -237,45 +248,30 @@ fn lambda_lift_inner(
             els,
             ann,
         } => Exp::If {
-            cond: Box::new(lambda_lift_inner(&cond, globals, force_global)),
-            thn: Box::new(lambda_lift_inner(&thn, globals, force_global)),
-            els: Box::new(lambda_lift_inner(&els, globals, force_global)),
+            cond: Box::new(lift_functions(&cond, vars, globals)),
+            thn: Box::new(lift_functions(&thn, vars, globals)),
+            els: Box::new(lift_functions(&els, vars, globals)),
             ann: (),
         },
         Exp::FunDefs { decls, body, ann } => {
-            let mut new_local_funcs = vec![];
             for decl in decls {
-                let mut captured = HashSet::new();
-                search_unbound(&decl.body, &mut HashSet::new(), &mut captured);
-                if captured.is_empty() && !force_global {
-                    new_local_funcs.push(decl.clone());
-                    continue;
-                }
                 globals.insert(
                     decl.name.clone(),
                     FunDecl {
                         name: decl.name.clone(),
-                        parameters: [decl.parameters.clone(), Vec::from_iter(captured)].concat(),
+                        parameters: [decl.parameters.clone(), Vec::from_iter(vars.clone())]
+                            .concat(),
                         body: decl.body.clone(),
                         ann: (),
                     },
                 );
             }
-
-            let new_body = lambda_lift_inner(&body, globals, force_global);
-            if new_local_funcs.is_empty() {
-                return new_body;
-            }
-            Exp::FunDefs {
-                decls: new_local_funcs,
-                body: Box::new(new_body),
-                ann: (),
-            }
+            lift_functions(&body, vars, globals)
         }
         Exp::Call(func, params, _) => {
             let new_params = params
                 .iter()
-                .map(|param| lambda_lift_inner(param, globals, force_global))
+                .map(|param| lift_functions(param, vars, globals))
                 .collect();
             Exp::Call(func.to_string(), new_params, ())
         }
@@ -287,17 +283,18 @@ fn lambda_lift_inner(
 pub fn lambda_lift<Ann>(p: &Exp<Ann>) -> (Vec<FunDecl<Exp<()>, ()>>, Exp<()>) {
     let unique_p = uniquify(&p, &mut HashMap::new(), &mut 0);
     let mut globals = HashMap::new();
-    let main = lambda_lift_inner(&unique_p, &mut globals, false);
+    let main = lift_functions(&unique_p, &HashSet::new(), &mut globals);
     (
         globals
             .values()
             .map(|decl| FunDecl {
                 name: decl.name.clone(),
                 parameters: decl.parameters.clone(),
-                body: rewrite_params(&decl.body, &globals),
+                body: rewrite_call_params(&decl.body, &globals),
                 ann: (),
             })
             .collect(),
-        rewrite_params(&main, &globals),
+        rewrite_call_params(&main, &globals),
     )
+    // TODO: add parameter optimization pass
 }
