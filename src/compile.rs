@@ -499,7 +499,7 @@ where
     Span: Clone,
 {
     checker::check_prog(p, &HashMap::new())?;
-    let unique_p = lambda_lift(&p);
+    let (global_functions, main) = lambda_lift(&p);
     // let (decls, main) = lambda_lift(&unique_p);
     // let program = seq_prog(&decls, &main);
 
