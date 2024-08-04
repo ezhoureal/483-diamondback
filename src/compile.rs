@@ -84,7 +84,7 @@ fn imm_to_arg64(imm: &ImmExp, stack: &HashMap<String, i32>) -> Arg64 {
             let offset = stack[s];
             Arg64::Mem(MemRef {
                 reg: Reg::Rsp,
-                offset: offset,
+                offset: -offset,
             })
         }
         ImmExp::Bool(b) => {
@@ -243,9 +243,7 @@ fn compile_to_instrs_inner<'a, 'b>(
                 Prim::Print => {
                     res = vec![
                         Instr::Mov(MovArgs::ToReg(Reg::Rdi, imm_to_arg64(&exps[0], stack))),
-                        Instr::Sub(BinArgs::ToReg(Reg::Rsp, Arg32::Unsigned(max_stack))),
                         Instr::Call("print_snake_val".to_string()),
-                        Instr::Add(BinArgs::ToReg(Reg::Rsp, Arg32::Unsigned(max_stack))),
                     ];
                 }
                 Prim::IsBool => {
@@ -350,7 +348,7 @@ fn compile_to_instrs_inner<'a, 'b>(
             res.push(Instr::Mov(MovArgs::ToMem(
                 MemRef {
                     reg: Reg::Rsp,
-                    offset: offset,
+                    offset: -offset,
                 },
                 Reg32::Reg(Reg::Rax),
             )));
@@ -421,7 +419,7 @@ fn compile_to_instrs_inner<'a, 'b>(
                 res.push(Instr::Mov(MovArgs::ToMem(
                     MemRef {
                         reg: Reg::Rsp,
-                        offset: offset,
+                        offset: -offset,
                     },
                     Reg32::Reg(Reg::Rax),
                 )));
@@ -488,27 +486,22 @@ fn error_handle_instr() -> Vec<Instr> {
         Instr::Label(ARITH_ERROR.to_string()),
         Instr::Mov(MovArgs::ToReg(Reg::Rdi, Arg64::Signed(0))),
         Instr::Mov(MovArgs::ToReg(Reg::Rsi, Arg64::Reg(Reg::Rax))),
-        Instr::Sub(BinArgs::ToReg(Reg::Rsp, Arg32::Unsigned(8))),
         Instr::Call(SNAKE_ERROR.to_string()),
         Instr::Label(CMP_ERROR.to_string()),
         Instr::Mov(MovArgs::ToReg(Reg::Rdi, Arg64::Signed(1))),
         Instr::Mov(MovArgs::ToReg(Reg::Rsi, Arg64::Reg(Reg::Rax))),
-        Instr::Sub(BinArgs::ToReg(Reg::Rsp, Arg32::Unsigned(8))),
         Instr::Call(SNAKE_ERROR.to_string()),
         Instr::Label(OVERFLOW.to_string()),
         Instr::Mov(MovArgs::ToReg(Reg::Rdi, Arg64::Signed(2))),
         Instr::Mov(MovArgs::ToReg(Reg::Rsi, Arg64::Reg(Reg::Rax))),
-        Instr::Sub(BinArgs::ToReg(Reg::Rsp, Arg32::Unsigned(8))),
         Instr::Call(SNAKE_ERROR.to_string()),
         Instr::Label(IF_ERROR.to_string()),
         Instr::Mov(MovArgs::ToReg(Reg::Rdi, Arg64::Signed(3))),
         Instr::Mov(MovArgs::ToReg(Reg::Rsi, Arg64::Reg(Reg::Rax))),
-        Instr::Sub(BinArgs::ToReg(Reg::Rsp, Arg32::Unsigned(8))),
         Instr::Call(SNAKE_ERROR.to_string()),
         Instr::Label(LOGIC_ERROR.to_string()),
         Instr::Mov(MovArgs::ToReg(Reg::Rdi, Arg64::Signed(4))),
         Instr::Mov(MovArgs::ToReg(Reg::Rsi, Arg64::Reg(Reg::Rax))),
-        Instr::Sub(BinArgs::ToReg(Reg::Rsp, Arg32::Unsigned(8))),
         Instr::Call(SNAKE_ERROR.to_string()),
     ]
 }
@@ -547,9 +540,13 @@ where
         extern snake_error
         extern print_snake_val
 {}
-    {}
+{}
 start_here:
-{}       
+        call main
+        ret
+main:
+{}
+        ret
 ",
         instrs_to_string(&error_handle_instr()),
         functions_is,
