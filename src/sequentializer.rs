@@ -1,45 +1,4 @@
 use crate::syntax::*;
-
-fn try_flatten_prim1(p: &Prim, exp: &SeqExp<()>) -> Option<SeqExp<()>> {
-    match exp {
-        SeqExp::Imm(i, _) => Some(SeqExp::Prim(*p, vec![i.clone()], ())),
-        _ => None,
-    }
-}
-
-fn try_flatten_prim2(
-    p: &Prim,
-    exp1: &SeqExp<()>,
-    exp2: &SeqExp<()>,
-    counter: &mut u32,
-) -> Option<SeqExp<()>> {
-    if let SeqExp::Imm(i1, _) = exp1 {
-        if let SeqExp::Imm(i2, _) = exp2 {
-            return Some(SeqExp::Prim(*p, vec![i1.clone(), i2.clone()], ()));
-        }
-        *counter += 1;
-        let name2 = format!("#prim2_2_{}", counter);
-        return Some(SeqExp::Let {
-            var: name2.clone(),
-            bound_exp: Box::new(exp2.clone()),
-            body: Box::new(SeqExp::Prim(*p, vec![i1.clone(), ImmExp::Var(name2)], ())),
-            ann: (),
-        });
-    }
-    if let SeqExp::Imm(i2, _) = exp2 {
-        *counter += 1;
-        let name1 = format!("#prim2_1_{}", counter);
-
-        return Some(SeqExp::Let {
-            var: name1.clone(),
-            bound_exp: Box::new(exp1.clone()),
-            body: Box::new(SeqExp::Prim(*p, vec![ImmExp::Var(name1), i2.clone()], ())),
-            ann: (),
-        });
-    }
-    None
-}
-
 fn parse_param_exps<Span>(
     params: &[Exp<Span>],
     counter: &mut u32,
@@ -158,7 +117,18 @@ where
             args,
             is_tail,
             ann,
-        } => todo!(),
+        } => {
+            let (imm_params, let_bindings) = parse_param_exps(args, counter);
+            generate_nested_let(
+                &let_bindings,
+                SeqExp::ExternalCall {
+                    fun_name: fun_name.clone(),
+                    args: imm_params,
+                    is_tail: is_tail.clone(),
+                    ann: (),
+                },
+            )
+        }
     }
 }
 
