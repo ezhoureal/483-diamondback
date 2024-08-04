@@ -473,7 +473,8 @@ fn space_needed(e: &SeqExp<()>) -> u32 {
             ann,
         } => todo!(),
     }
-    // system V requires odd stack upon entry
+    // even stack upon entry for internal SNAKE calls
+    // odd variables alloc + return address
     if stack % 2 == 0 {
         stack += 1;
     }
