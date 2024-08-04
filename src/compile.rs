@@ -396,17 +396,49 @@ fn compile_to_instrs_inner<'a, 'b>(
             let mut res = vec![];
             for decl in decls {
                 res.push(Instr::Label(decl.name.clone()));
-                res.extend(compile_to_instrs_inner(&decl.body, counter, max_stack, stack));
+                res.extend(compile_to_instrs_inner(
+                    &decl.body, counter, max_stack, stack,
+                ));
+                res.push(Instr::Ret);
             }
             res
-        },
+        }
         SeqExp::InternalTailCall(_, _, _) => todo!(),
         SeqExp::ExternalCall {
             fun_name,
             args,
             is_tail,
             ann,
-        } => todo!(),
+        } => {
+            let mut offset: i32 = max_stack.try_into().unwrap();
+            offset += 16;
+            let mut res = vec![];
+            for arg in args {
+                res.push(Instr::Mov(MovArgs::ToReg(
+                    Reg::Rax,
+                    imm_to_arg64(arg, stack),
+                )));
+                res.push(Instr::Mov(MovArgs::ToMem(
+                    MemRef {
+                        reg: Reg::Rsp,
+                        offset: offset,
+                    },
+                    Reg32::Reg(Reg::Rax),
+                )));
+                offset += 8;
+            }
+            // record called function's parameters to [stack]
+            res.push(Instr::Sub(BinArgs::ToReg(
+                Reg::Rsp,
+                Arg32::Unsigned(max_stack + 8),
+            )));
+            res.push(Instr::Jmp(fun_name.clone()));
+            res.push(Instr::Add(BinArgs::ToReg(
+                Reg::Rsp,
+                Arg32::Unsigned(max_stack + 8),
+            )));
+            res
+        }
     }
 }
 
@@ -443,6 +475,7 @@ fn space_needed(e: &SeqExp<()>) -> u32 {
             ann,
         } => todo!(),
     }
+    // system V requires odd stack upon entry
     if stack % 2 == 0 {
         stack += 1;
     }
@@ -450,33 +483,32 @@ fn space_needed(e: &SeqExp<()>) -> u32 {
     stack
 }
 
-fn error_handle_instr(e: &SeqExp<()>) -> Vec<Instr> {
-    let stack = space_needed(&e);
+fn error_handle_instr() -> Vec<Instr> {
     vec![
         Instr::Label(ARITH_ERROR.to_string()),
         Instr::Mov(MovArgs::ToReg(Reg::Rdi, Arg64::Signed(0))),
         Instr::Mov(MovArgs::ToReg(Reg::Rsi, Arg64::Reg(Reg::Rax))),
-        Instr::Sub(BinArgs::ToReg(Reg::Rsp, Arg32::Unsigned(stack))),
+        Instr::Sub(BinArgs::ToReg(Reg::Rsp, Arg32::Unsigned(8))),
         Instr::Call(SNAKE_ERROR.to_string()),
         Instr::Label(CMP_ERROR.to_string()),
         Instr::Mov(MovArgs::ToReg(Reg::Rdi, Arg64::Signed(1))),
         Instr::Mov(MovArgs::ToReg(Reg::Rsi, Arg64::Reg(Reg::Rax))),
-        Instr::Sub(BinArgs::ToReg(Reg::Rsp, Arg32::Unsigned(stack))),
+        Instr::Sub(BinArgs::ToReg(Reg::Rsp, Arg32::Unsigned(8))),
         Instr::Call(SNAKE_ERROR.to_string()),
         Instr::Label(OVERFLOW.to_string()),
         Instr::Mov(MovArgs::ToReg(Reg::Rdi, Arg64::Signed(2))),
         Instr::Mov(MovArgs::ToReg(Reg::Rsi, Arg64::Reg(Reg::Rax))),
-        Instr::Sub(BinArgs::ToReg(Reg::Rsp, Arg32::Unsigned(stack))),
+        Instr::Sub(BinArgs::ToReg(Reg::Rsp, Arg32::Unsigned(8))),
         Instr::Call(SNAKE_ERROR.to_string()),
         Instr::Label(IF_ERROR.to_string()),
         Instr::Mov(MovArgs::ToReg(Reg::Rdi, Arg64::Signed(3))),
         Instr::Mov(MovArgs::ToReg(Reg::Rsi, Arg64::Reg(Reg::Rax))),
-        Instr::Sub(BinArgs::ToReg(Reg::Rsp, Arg32::Unsigned(stack))),
+        Instr::Sub(BinArgs::ToReg(Reg::Rsp, Arg32::Unsigned(8))),
         Instr::Call(SNAKE_ERROR.to_string()),
         Instr::Label(LOGIC_ERROR.to_string()),
         Instr::Mov(MovArgs::ToReg(Reg::Rdi, Arg64::Signed(4))),
         Instr::Mov(MovArgs::ToReg(Reg::Rsi, Arg64::Reg(Reg::Rax))),
-        Instr::Sub(BinArgs::ToReg(Reg::Rsp, Arg32::Unsigned(stack))),
+        Instr::Sub(BinArgs::ToReg(Reg::Rsp, Arg32::Unsigned(8))),
         Instr::Call(SNAKE_ERROR.to_string()),
     ]
 }
@@ -519,7 +551,7 @@ where
 start_here:
 {}       
 ",
-        instrs_to_string(&error_handle_instr(&program.main)),
+        instrs_to_string(&error_handle_instr()),
         functions_is,
         main_is
     );
