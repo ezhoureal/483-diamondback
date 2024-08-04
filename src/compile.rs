@@ -60,23 +60,11 @@ pub enum CompileErr<Span> {
 }
 
 // returns instruction to move imm to Rax
-fn imm_to_rax(imm: &ImmExp, stack: &[(&str, i32)]) -> Vec<Instr> {
+fn imm_to_rax(imm: &ImmExp, stack: &HashMap<String, i32>) -> Vec<Instr> {
     vec![Instr::Mov(MovArgs::ToReg(
         Reg::Rax,
         imm_to_arg64(imm, stack),
     ))]
-}
-
-fn get<T>(env: &[(&str, T)], x: &str) -> Option<T>
-where
-    T: Copy,
-{
-    for (y, n) in env.iter().rev() {
-        if x == *y {
-            return Some(*n);
-        }
-    }
-    None
 }
 
 static SNAKE_TRU: u64 = 0xFF_FF_FF_FF_FF_FF_FF_FF;
@@ -89,11 +77,11 @@ static IF_ERROR: &str = "if_error";
 static LOGIC_ERROR: &str = "logic_error";
 static SNAKE_ERROR: &str = "snake_error";
 
-fn imm_to_arg64(imm: &ImmExp, stack: &[(&str, i32)]) -> Arg64 {
+fn imm_to_arg64(imm: &ImmExp, stack: &HashMap<String, i32>) -> Arg64 {
     match &imm {
         ImmExp::Num(i) => Arg64::Signed(*i << 1),
         ImmExp::Var(s) => {
-            let offset = get(stack, &s).unwrap();
+            let offset = stack[s];
             Arg64::Mem(MemRef {
                 reg: Reg::Rsp,
                 offset: offset,
@@ -109,7 +97,7 @@ fn imm_to_arg64(imm: &ImmExp, stack: &[(&str, i32)]) -> Arg64 {
     }
 }
 
-fn sub_for_cmp(exps: &Vec<ImmExp>, stack: &Vec<(&str, i32)>, reverse: bool) -> Vec<Instr> {
+fn sub_for_cmp(exps: &Vec<ImmExp>, stack: &HashMap<String, i32>, reverse: bool) -> Vec<Instr> {
     let mut res = vec![];
     if reverse {
         // exps[1] - exps[0]
@@ -194,7 +182,7 @@ fn compile_to_instrs_inner<'a, 'b>(
     e: &'a SeqExp<()>,
     counter: &mut u32,
     max_stack: u32,
-    stack: &'b mut Vec<(&'a str, i32)>,
+    stack: &'b mut HashMap<String, i32>,
 ) -> Vec<Instr> {
     match e {
         SeqExp::Imm(exp, _) => imm_to_rax(exp, stack),
@@ -366,7 +354,7 @@ fn compile_to_instrs_inner<'a, 'b>(
                 },
                 Reg32::Reg(Reg::Rax),
             )));
-            stack.push((var, offset));
+            stack.insert(var.clone(), offset);
 
             res.append(&mut compile_to_instrs_inner(
                 &body, counter, max_stack, stack,
@@ -404,7 +392,14 @@ fn compile_to_instrs_inner<'a, 'b>(
             res.push(Instr::Label(done_label));
             res
         }
-        SeqExp::FunDefs { decls, body, ann } => todo!(),
+        SeqExp::FunDefs { decls, body, ann } => {
+            let mut res = vec![];
+            for decl in decls {
+                res.push(Instr::Label(decl.name.clone()));
+                res.extend(compile_to_instrs_inner(&decl.body, counter, max_stack, stack));
+            }
+            res
+        },
         SeqExp::InternalTailCall(_, _, _) => todo!(),
         SeqExp::ExternalCall {
             fun_name,
@@ -417,7 +412,7 @@ fn compile_to_instrs_inner<'a, 'b>(
 
 /* Feel free to add any helper functions you need */
 fn compile_to_instrs(e: &SeqExp<()>, max_stack: u32) -> Vec<Instr> {
-    let mut is = compile_to_instrs_inner(e, &mut 0, max_stack, &mut vec![]);
+    let mut is = compile_to_instrs_inner(e, &mut 0, max_stack, &mut HashMap::new());
     is.push(Instr::Ret);
     is
 }
@@ -502,18 +497,16 @@ where
     let (global_functions, main) = lambda_lift(&p);
     let program = sequentializer::seq_prog(&global_functions, &main);
 
-    let seq = sequentializer::seq(p, &mut 0);
-
-    let functions_is: Vec<String> = program
+    let functions_is: String = program
         .funs
         .iter()
         .map(|f| {
-            let max_stack = todo!();
+            let max_stack = space_needed(&f.body);
             instrs_to_string(&compile_to_instrs(&f.body, max_stack))
         })
         .collect();
-    let max_stack = space_needed(&seq);
-    let main_is = instrs_to_string(&compile_to_instrs(&seq, max_stack));
+    let max_stack = space_needed(&program.main);
+    let main_is = instrs_to_string(&compile_to_instrs(&program.main, max_stack));
 
     let res = format!(
         "\
@@ -522,11 +515,12 @@ where
         extern snake_error
         extern print_snake_val
 {}
+    {}
 start_here:
 {}       
 ",
-        instrs_to_string(&error_handle_instr(&seq)),
-        // &functions_is,
+        instrs_to_string(&error_handle_instr(&program.main)),
+        functions_is,
         main_is
     );
     println!("{}", res);

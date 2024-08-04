@@ -1,16 +1,13 @@
 use crate::syntax::*;
-fn parse_param_exps<Span>(
-    params: &[Exp<Span>],
+fn parse_param_exps(
+    params: &[Exp<()>],
     counter: &mut u32,
-) -> (Vec<ImmExp>, Vec<(String, SeqExp<()>)>)
-where
-    Span: Clone,
-{
+) -> (Vec<ImmExp>, Vec<(String, SeqExp<()>)>) {
     let mut let_bindings = vec![];
     let imm_params = params
         .iter()
         .map(|param| {
-            let seq_param = seq(param, counter);
+            let seq_param = sequentialize(param, counter);
             if let SeqExp::Imm(i, _) = seq_param {
                 return i;
             }
@@ -35,16 +32,13 @@ fn generate_nested_let(bindings: &[(String, SeqExp<()>)], body: SeqExp<()>) -> S
     }
 }
 
-pub fn seq<Span>(e: &Exp<Span>, counter: &mut u32) -> SeqExp<()>
-where
-    Span: Clone,
-{
+fn sequentialize(e: &Exp<()>, counter: &mut u32) -> SeqExp<()> {
     match e {
         Exp::Bool(b, _) => SeqExp::Imm(ImmExp::Bool(*b), ()),
         Exp::Num(i, _) => SeqExp::Imm(ImmExp::Num(*i), ()),
         Exp::Var(s, _) => SeqExp::Imm(ImmExp::Var(s.clone()), ()),
         Exp::Prim(p, exps, ann) => {
-            let params: Vec<Exp<Span>> = exps.iter().map(|exp| (*exp.clone())).collect();
+            let params: Vec<Exp<()>> = exps.iter().map(|exp| (*exp.clone())).collect();
             let (imm_params, let_bindings) = parse_param_exps(&params, counter);
             generate_nested_let(&let_bindings, SeqExp::Prim(*p, imm_params, ()))
         }
@@ -57,11 +51,11 @@ where
             for (var, exp) in bindings.iter().rev() {
                 optionRes = Some(SeqExp::Let {
                     var: var.clone(),
-                    bound_exp: Box::new(seq(&exp, counter)),
+                    bound_exp: Box::new(sequentialize(&exp, counter)),
                     body: if optionRes.is_some() {
                         Box::new(optionRes.unwrap())
                     } else {
-                        Box::new(seq(body, counter))
+                        Box::new(sequentialize(body, counter))
                     },
                     ann: (),
                 })
@@ -78,11 +72,11 @@ where
             let var_name = format!("#if_{}", counter);
             SeqExp::Let {
                 var: var_name.clone(),
-                bound_exp: Box::new(seq(cond, counter)),
+                bound_exp: Box::new(sequentialize(cond, counter)),
                 body: Box::new(SeqExp::If {
                     cond: ImmExp::Var(var_name),
-                    thn: Box::new(seq(thn, counter)),
-                    els: Box::new(seq(els, counter)),
+                    thn: Box::new(sequentialize(thn, counter)),
+                    els: Box::new(sequentialize(els, counter)),
                     ann: (),
                 }),
                 ann: (),
@@ -94,13 +88,13 @@ where
                 .map(|decl| SeqFunDecl {
                     name: decl.name.clone(),
                     parameters: decl.parameters.clone(),
-                    body: seq(&decl.body, counter),
+                    body: sequentialize(&decl.body, counter),
                     ann: (),
                 })
                 .collect();
             SeqExp::FunDefs {
                 decls: seq_decls,
-                body: Box::new(seq(&body, counter)),
+                body: Box::new(sequentialize(&body, counter)),
                 ann: (),
             }
         }
@@ -138,7 +132,7 @@ pub fn seq_prog(decls: &[FunDecl<Exp<()>, ()>], p: &Exp<()>) -> SeqProg<()> {
         funs: decls
             .iter()
             .map(|decl| {
-                let seq_body = seq(&decl.body, &mut counter);
+                let seq_body = sequentialize(&decl.body, &mut counter);
                 FunDecl {
                     name: decl.name.clone(),
                     parameters: decl.parameters.clone(),
@@ -147,7 +141,7 @@ pub fn seq_prog(decls: &[FunDecl<Exp<()>, ()>], p: &Exp<()>) -> SeqProg<()> {
                 }
             })
             .collect(),
-        main: seq(p, &mut counter),
+        main: sequentialize(p, &mut counter),
         ann: (),
     }
 }
