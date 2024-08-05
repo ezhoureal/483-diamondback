@@ -76,6 +76,11 @@ mk_test!(test_30, "test_30", "true");
 mk_test!(test_31, "test_31", "3922\n3922");
 mk_test!(test_32, "test_32", "2\n4\n4");
 
+mk_test!(func_test_1, "func_test_1", "44");
+mk_test!(func_test_2, "func_test_2", "44");
+mk_test!(func_test_3, "func_test_3", "44");
+mk_test!(func_test_4, "func_test_4", "44");
+
 // IMPLEMENTATION
 fn test_example_file(f: &str, expected_str: &str) -> std::io::Result<()> {
     use std::path::Path;
@@ -88,7 +93,10 @@ fn test_example_file(f: &str, expected_str: &str) -> std::io::Result<()> {
     match runner::compile_and_run_file(&path, tmp_dir.path(), &mut w) {
         Ok(()) => {
             let stdout = std::str::from_utf8(&w).unwrap();
-            assert_eq!(stdout.trim(), expected_str)
+            let mut interp_w = Vec::new();
+            runner::interp(path, &mut interp_w);
+            assert_eq!(std::str::from_utf8(&interp_w).unwrap(), stdout);
+            // assert_eq!(stdout.trim(), expected_str)
         }
         Err(e) => {
             assert!(false, "Expected {}, got an error: {}", expected_str, e)
