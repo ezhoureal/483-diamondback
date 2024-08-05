@@ -201,13 +201,15 @@ fn rewrite_call_params(e: &Exp<()>, globals: &HashMap<String, FunDecl<Exp<()>, (
         },
         Exp::Call(func, params, _) => {
             if !globals.contains_key(func) {
+                println!("global doesn't contain {}", func);
                 return e.clone();
             }
+            println!("return external call from call");
             let mut mod_params = params.clone();
             for p in globals[func].parameters.iter().skip(params.len()) {
                 mod_params.push(Exp::Var(p.clone(), ()))
             }
-            Exp::Call(func.to_string(), mod_params, ())
+            Exp::ExternalCall { fun_name: func.to_string(), args: mod_params, is_tail: false, ann: () }
         }
         _ => e.clone(),
     }
@@ -261,6 +263,7 @@ fn lift_functions(
             let mut new_local = vec![];
             for decl in decls {
                 if !need_lift.contains(&decl.name) {
+                    println!("{} doesn't need lift", decl.name);
                     new_local.push(decl.clone());
                     continue;
                 }
@@ -286,7 +289,7 @@ fn lift_functions(
                 .iter()
                 .map(|param| lift_functions(param, vars, globals, need_lift))
                 .collect();
-            Exp::ExternalCall { fun_name: func.clone(), args: new_params, is_tail: false, ann: () }
+            Exp::Call(func.clone(), new_params, ())
         }
         _ => e.clone(),
     }
@@ -295,24 +298,49 @@ fn lift_functions(
 // returns name of functions to lift
 fn should_lift(p: &Exp<()>) -> HashSet<String> {
     let mut set = HashSet::new();
-    // match p {
-    //     Exp::Prim(_, _, _) => todo!(),
-    //     Exp::Let { bindings, body, ann } => todo!(),
-    //     Exp::If { cond, thn, els, ann } => todo!(),
-    //     Exp::FunDefs { decls, body, ann } => todo!(),
-    //     Exp::Call(_, _, _) => todo!(),
-    //     Exp::InternalTailCall(_, _, _) => todo!(),
-    //     Exp::ExternalCall { fun_name, args, is_tail, ann } => todo!(),
-    //     _ => {}
-    // }
+    match p {
+        Exp::Prim(_, exps, _) => {
+            for exp in exps {
+                set.extend(should_lift(exp));
+            }
+        },
+        Exp::Let { bindings, body, ann } => {
+            for (v, bind) in bindings {
+                set.extend(should_lift(bind));
+            }
+            set.extend(should_lift(body));
+        }
+        Exp::If { cond, thn, els, ann } => {
+            set.extend(should_lift(cond));
+            set.extend(should_lift(thn));
+            set.extend(should_lift(els));
+        }
+        Exp::FunDefs { decls, body, ann } => {
+            for decl in decls {
+                set.insert(decl.name.clone());
+                set.extend(should_lift(&decl.body));
+            }
+            set.extend(should_lift(body));
+        }
+        Exp::Call(_, args, _) => {
+            for arg in args {
+                set.extend(should_lift(arg));
+            }
+        }
+        Exp::InternalTailCall(_, _, _) => todo!(),
+        Exp::ExternalCall { fun_name, args, is_tail, ann } => todo!(),
+        _ => {}
+    }
     set
 }
 
 // Lift some functions to global definitions
 pub fn lambda_lift<Ann>(p: &Exp<Ann>) -> (Vec<FunDecl<Exp<()>, ()>>, Exp<()>) {
     let unique_p = uniquify(&p, &mut HashMap::new(), &mut 0);
+    println!("after uniquify: {:?}", unique_p);
     let mut globals = HashMap::new();
     let to_lift = should_lift(&unique_p);
+    println!("should lift len = {}, content = {:?}", to_lift.len(), to_lift);
     let main = lift_functions(&unique_p, &HashSet::new(), &mut globals, &to_lift);
     (
         globals

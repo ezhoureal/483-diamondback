@@ -510,7 +510,7 @@ fn compile_to_instrs_inner<'a, 'b>(
                 Reg::Rsp,
                 Arg32::Signed(stack_top),
             )));
-            res.push(Instr::Jmp(fun_name.clone()));
+            res.push(Instr::Call(format!("func_{}", fun_name)));
             res.push(Instr::Add(BinArgs::ToReg(
                 Reg::Rsp,
                 Arg32::Signed(stack_top),
@@ -528,14 +528,17 @@ fn compile_to_instrs(e: &SeqExp<()>, counter: &mut u32) -> Vec<Instr> {
 }
 
 fn compile_func_to_instr(f: &FunDecl<SeqExp<()>, ()>, counter: &mut u32) -> Vec<Instr> {
+    let mut is = vec![Instr::Label(format!("func_{}", f.name))];
     let mut vars = HashMap::<String, i32>::new();
     push_params(&mut vars, &f.parameters);
-    compile_to_instrs_inner(
+    is.extend(compile_to_instrs_inner(
         &f.body,
         counter,
         f.parameters.len().try_into().unwrap(),
         &mut vars,
-    )
+    ));
+    is.push(Instr::Ret);
+    is
 }
 
 fn align_stack(mut stack: i32) -> i32 {
@@ -593,6 +596,7 @@ where
 {
     checker::check_prog(p, &HashMap::new())?;
     let (global_functions, main) = lambda_lift(&p);
+    println!("global function size = {}", global_functions.len());
     let program = sequentializer::seq_prog(&global_functions, &main);
 
     let mut counter: u32 = 0;
@@ -616,7 +620,6 @@ start_here:
         ret
 main:
 {}
-        ret
 ",
         instrs_to_string(&error_handle_instr()),
         functions_is,

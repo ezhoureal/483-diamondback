@@ -80,6 +80,9 @@ mk_test!(func_test_1, "func_test_1", "44");
 mk_test!(func_test_2, "func_test_2", "44");
 mk_test!(func_test_3, "func_test_3", "44");
 mk_test!(func_test_4, "func_test_4", "44");
+mk_test!(func_test_5, "func_test_5", "44");
+mk_test!(func_test_6, "func_test_6", "44");
+mk_test!(func_test_7, "func_test_7", "44");
 
 // IMPLEMENTATION
 fn test_example_file(f: &str, expected_str: &str) -> std::io::Result<()> {

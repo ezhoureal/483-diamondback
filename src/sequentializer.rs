@@ -98,7 +98,9 @@ fn sequentialize(e: &Exp<()>, counter: &mut u32) -> SeqExp<()> {
                 ann: (),
             }
         }
-        Exp::Call(_, _, _) => todo!(),
+        Exp::Call(func, args, _) => {
+            unimplemented!("called function = {}, arg size = {}", func, args.len())
+        },
         Exp::InternalTailCall(func, params, _) => {
             let (imm_params, let_bindings) = parse_param_exps(params, counter);
             generate_nested_let(
