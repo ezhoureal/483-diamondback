@@ -243,7 +243,9 @@ fn compile_to_instrs_inner<'a, 'b>(
                 Prim::Print => {
                     res = vec![
                         Instr::Mov(MovArgs::ToReg(Reg::Rdi, imm_to_arg64(&exps[0], stack))),
+                        Instr::Sub(BinArgs::ToReg(Reg::Rsp, Arg32::Unsigned(max_stack + 8))),
                         Instr::Call("print_snake_val".to_string()),
+                        Instr::Add(BinArgs::ToReg(Reg::Rsp, Arg32::Unsigned(max_stack + 8))),
                     ];
                 }
                 Prim::IsBool => {
@@ -371,7 +373,6 @@ fn compile_to_instrs_inner<'a, 'b>(
             let els_label = format!("else_{}", counter);
             let done_label = format!("done_{}", counter);
             res.append(&mut vec![
-                // todo: fix cmp with types
                 Instr::Mov(MovArgs::ToReg(Reg::Rdx, Arg64::Unsigned(SNAKE_FLS))),
                 Instr::Cmp(BinArgs::ToReg(Reg::Rax, Arg32::Reg(Reg::Rdx))),
                 Instr::Je(els_label.clone()),
@@ -428,12 +429,12 @@ fn compile_to_instrs_inner<'a, 'b>(
             // record called function's parameters to [stack]
             res.push(Instr::Sub(BinArgs::ToReg(
                 Reg::Rsp,
-                Arg32::Unsigned(max_stack + 8),
+                Arg32::Unsigned(max_stack),
             )));
             res.push(Instr::Jmp(fun_name.clone()));
             res.push(Instr::Add(BinArgs::ToReg(
                 Reg::Rsp,
-                Arg32::Unsigned(max_stack + 8),
+                Arg32::Unsigned(max_stack),
             )));
             res
         }
@@ -441,10 +442,20 @@ fn compile_to_instrs_inner<'a, 'b>(
 }
 
 /* Feel free to add any helper functions you need */
-fn compile_to_instrs(e: &SeqExp<()>, max_stack: u32) -> Vec<Instr> {
-    let mut is = compile_to_instrs_inner(e, &mut 0, max_stack, &mut HashMap::new());
+fn compile_to_instrs(e: &SeqExp<()>, counter: &mut u32) -> Vec<Instr> {
+    let max_stack = space_needed(e);
+    let mut is = compile_to_instrs_inner(e, counter, max_stack, &mut HashMap::new());
     is.push(Instr::Ret);
     is
+}
+
+fn compile_func_to_instr(f: &FunDecl<SeqExp<()>, ()>, counter: &mut u32) -> Vec<Instr> {
+    let max_stack = space_needed(&f.body);
+    let mut stack = HashMap::<String, i32>::new();
+    for (i, param) in f.parameters.iter().enumerate() {
+        stack.insert(param.clone(), i32::try_from(i).unwrap() + 1);
+    }
+    compile_to_instrs_inner(&f.body, counter, max_stack, &mut stack)
 }
 
 fn space_needed(e: &SeqExp<()>) -> u32 {
@@ -474,7 +485,7 @@ fn space_needed(e: &SeqExp<()>) -> u32 {
         } => todo!(),
     }
     // even stack upon entry for internal SNAKE calls
-    // odd variables alloc + return address
+    // odd variables alloc + 1 return address alloc
     if stack % 2 == 0 {
         stack += 1;
     }
@@ -523,16 +534,15 @@ where
     let (global_functions, main) = lambda_lift(&p);
     let program = sequentializer::seq_prog(&global_functions, &main);
 
+    let mut counter : u32 = 0;
     let functions_is: String = program
         .funs
         .iter()
         .map(|f| {
-            let max_stack = space_needed(&f.body);
-            instrs_to_string(&compile_to_instrs(&f.body, max_stack))
+            instrs_to_string(&compile_func_to_instr(&f, &mut counter))
         })
         .collect();
-    let max_stack = space_needed(&program.main);
-    let main_is = instrs_to_string(&compile_to_instrs(&program.main, max_stack));
+    let main_is = instrs_to_string(&compile_to_instrs(&program.main, &mut counter));
 
     let res = format!(
         "\
