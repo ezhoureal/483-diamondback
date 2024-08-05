@@ -181,20 +181,20 @@ fn if_check(reg: Reg) -> Vec<Instr> {
 fn compile_to_instrs_inner<'a, 'b>(
     e: &'a SeqExp<()>,
     counter: &mut u32,
-    max_stack: u32,
-    stack: &'b mut HashMap<String, i32>,
+    stack: i32,
+    vars: &'b mut HashMap<String, i32>,
 ) -> Vec<Instr> {
     match e {
-        SeqExp::Imm(exp, _) => imm_to_rax(exp, stack),
+        SeqExp::Imm(exp, _) => imm_to_rax(exp, vars),
         SeqExp::Prim(p, exps, _) => {
-            let mut res = imm_to_rax(&exps[0], stack);
+            let mut res = imm_to_rax(&exps[0], vars);
             //
             match p {
                 Prim::Add => {
                     res.append(&mut arith_check(Reg::Rax));
                     res.push(Instr::Mov(MovArgs::ToReg(
                         Reg::Rdx,
-                        imm_to_arg64(&exps[1], stack),
+                        imm_to_arg64(&exps[1], vars),
                     )));
                     res.append(&mut arith_check(Reg::Rdx));
                     res.push(Instr::Add(BinArgs::ToReg(Reg::Rax, Arg32::Reg(Reg::Rdx))));
@@ -204,7 +204,7 @@ fn compile_to_instrs_inner<'a, 'b>(
                     res.append(&mut arith_check(Reg::Rax));
                     res.push(Instr::Mov(MovArgs::ToReg(
                         Reg::Rdx,
-                        imm_to_arg64(&exps[1], stack),
+                        imm_to_arg64(&exps[1], vars),
                     )));
                     res.append(&mut arith_check(Reg::Rdx));
                     res.push(Instr::Sub(BinArgs::ToReg(Reg::Rax, Arg32::Reg(Reg::Rdx))));
@@ -214,7 +214,7 @@ fn compile_to_instrs_inner<'a, 'b>(
                     res.append(&mut arith_check(Reg::Rax));
                     res.push(Instr::Mov(MovArgs::ToReg(
                         Reg::Rdx,
-                        imm_to_arg64(&exps[1], stack),
+                        imm_to_arg64(&exps[1], vars),
                     )));
                     res.append(&mut arith_check(Reg::Rdx));
                     res.push(Instr::Sar(BinArgs::ToReg(Reg::Rdx, Arg32::Signed(1))));
@@ -242,10 +242,16 @@ fn compile_to_instrs_inner<'a, 'b>(
                 }
                 Prim::Print => {
                     res = vec![
-                        Instr::Mov(MovArgs::ToReg(Reg::Rdi, imm_to_arg64(&exps[0], stack))),
-                        Instr::Sub(BinArgs::ToReg(Reg::Rsp, Arg32::Unsigned(max_stack + 8))),
+                        Instr::Mov(MovArgs::ToReg(Reg::Rdi, imm_to_arg64(&exps[0], vars))),
+                        Instr::Sub(BinArgs::ToReg(
+                            Reg::Rsp,
+                            Arg32::Signed(align_stack(stack) + 8),
+                        )),
                         Instr::Call("print_snake_val".to_string()),
-                        Instr::Add(BinArgs::ToReg(Reg::Rsp, Arg32::Unsigned(max_stack + 8))),
+                        Instr::Add(BinArgs::ToReg(
+                            Reg::Rsp,
+                            Arg32::Signed(align_stack(stack) + 8),
+                        )),
                     ];
                 }
                 Prim::IsBool => {
@@ -270,7 +276,7 @@ fn compile_to_instrs_inner<'a, 'b>(
                     res.append(&mut logic_check(Reg::Rax));
                     res.push(Instr::Mov(MovArgs::ToReg(
                         Reg::Rdx,
-                        imm_to_arg64(&exps[1], stack),
+                        imm_to_arg64(&exps[1], vars),
                     )));
                     res.append(&mut logic_check(Reg::Rdx));
                     res.push(Instr::And(BinArgs::ToReg(Reg::Rax, Arg32::Reg(Reg::Rdx))));
@@ -279,31 +285,31 @@ fn compile_to_instrs_inner<'a, 'b>(
                     res.append(&mut logic_check(Reg::Rax));
                     res.push(Instr::Mov(MovArgs::ToReg(
                         Reg::Rdx,
-                        imm_to_arg64(&exps[1], stack),
+                        imm_to_arg64(&exps[1], vars),
                     )));
                     res.append(&mut logic_check(Reg::Rdx));
                     res.push(Instr::Or(BinArgs::ToReg(Reg::Rax, Arg32::Reg(Reg::Rdx))));
                 }
                 Prim::Lt => {
-                    res.append(&mut sub_for_cmp(exps, stack, false));
+                    res.append(&mut sub_for_cmp(exps, vars, false));
                     res.append(&mut is_neg());
                 }
                 Prim::Gt => {
-                    res.append(&mut sub_for_cmp(exps, stack, true));
+                    res.append(&mut sub_for_cmp(exps, vars, true));
                     res.append(&mut is_neg());
                 }
                 Prim::Le => {
-                    res.append(&mut sub_for_cmp(exps, stack, true));
+                    res.append(&mut sub_for_cmp(exps, vars, true));
                     res.append(&mut is_non_neg());
                 }
                 Prim::Ge => {
-                    res.append(&mut sub_for_cmp(exps, stack, false));
+                    res.append(&mut sub_for_cmp(exps, vars, false));
                     res.append(&mut is_non_neg());
                 }
                 Prim::Eq => {
                     res.push(Instr::Mov(MovArgs::ToReg(
                         Reg::Rdx,
-                        imm_to_arg64(&exps[1], stack),
+                        imm_to_arg64(&exps[1], vars),
                     )));
                     *counter += 1;
                     let fls_label = format!("false_{}", counter);
@@ -321,7 +327,7 @@ fn compile_to_instrs_inner<'a, 'b>(
                 Prim::Neq => {
                     res.push(Instr::Mov(MovArgs::ToReg(
                         Reg::Rdx,
-                        imm_to_arg64(&exps[1], stack),
+                        imm_to_arg64(&exps[1], vars),
                     )));
                     *counter += 1;
                     let fls_label = format!("false_{}", counter);
@@ -345,8 +351,8 @@ fn compile_to_instrs_inner<'a, 'b>(
             body,
             ann,
         } => {
-            let mut res = compile_to_instrs_inner(&bound_exp, counter, max_stack, stack);
-            let offset: i32 = ((stack.len() + 1) * 8).try_into().unwrap();
+            let mut res = compile_to_instrs_inner(&bound_exp, counter, stack, vars);
+            let offset: i32 = ((stack + 1) * 8).try_into().unwrap();
             res.push(Instr::Mov(MovArgs::ToMem(
                 MemRef {
                     reg: Reg::Rsp,
@@ -354,10 +360,13 @@ fn compile_to_instrs_inner<'a, 'b>(
                 },
                 Reg32::Reg(Reg::Rax),
             )));
-            stack.insert(var.clone(), offset);
+            vars.insert(var.clone(), offset);
 
             res.append(&mut compile_to_instrs_inner(
-                &body, counter, max_stack, stack,
+                &body,
+                counter,
+                stack + 1,
+                vars,
             ));
             res
         }
@@ -367,7 +376,7 @@ fn compile_to_instrs_inner<'a, 'b>(
             els,
             ann,
         } => {
-            let mut res = imm_to_rax(cond, stack);
+            let mut res = imm_to_rax(cond, vars);
             res.append(&mut if_check(Reg::Rax));
             *counter += 1;
             let els_label = format!("else_{}", counter);
@@ -381,60 +390,130 @@ fn compile_to_instrs_inner<'a, 'b>(
             res.append(&mut compile_to_instrs_inner(
                 thn,
                 counter,
-                max_stack,
-                &mut stack.clone(),
+                stack,
+                &mut vars.clone(),
             ));
             res.push(Instr::Jmp(done_label.clone()));
 
             res.push(Instr::Label(els_label));
-            res.append(&mut compile_to_instrs_inner(els, counter, max_stack, stack));
+            res.append(&mut compile_to_instrs_inner(els, counter, stack, vars));
             res.push(Instr::Label(done_label));
             res
         }
         SeqExp::FunDefs { decls, body, ann } => {
-            let mut res = vec![];
+            // locally defined functions
+            *counter += 1;
+            let body_label = format!("body_{}", counter);
+            let mut res = vec![Instr::Jmp(body_label.clone())];
             for decl in decls {
+                push_params(vars, &decl.parameters);
                 res.push(Instr::Label(decl.name.clone()));
                 res.extend(compile_to_instrs_inner(
-                    &decl.body, counter, max_stack, stack,
+                    &decl.body,
+                    counter,
+                    i32::try_from(decl.parameters.len()).unwrap(),
+                    vars,
                 ));
                 res.push(Instr::Ret);
             }
+            res.push(Instr::Label(body_label));
+            res.extend(compile_to_instrs_inner(&body, counter, stack, vars));
             res
         }
-        SeqExp::InternalTailCall(_, _, _) => todo!(),
+        SeqExp::InternalTailCall(func, args, _) => {
+            let mut res = vec![];
+            // overwrite current stack with function arguments
+            // need to save variables to lower stack addresses to avoid overwriting them
+            let mut var_args = HashMap::<String, i32>::new();
+            for arg in args {
+                if let ImmExp::Var(v) = arg {
+                    if var_args.contains_key(v) {
+                        continue;
+                    }
+                    var_args.insert(
+                        v.clone(),
+                        -8 * (i32::try_from(var_args.len()).unwrap() + stack + 1),
+                    );
+                    res.push(Instr::Mov(MovArgs::ToReg(
+                        Reg::Rax,
+                        imm_to_arg64(arg, &vars),
+                    )));
+                    res.push(Instr::Mov(MovArgs::ToMem(
+                        MemRef {
+                            reg: Reg::Rsp,
+                            offset: var_args[v],
+                        },
+                        Reg32::Reg(Reg::Rax),
+                    )));
+                }
+            }
+            for (i, arg) in args.iter().enumerate() {
+                let offset: i32 = -8 * (i32::try_from(i).unwrap() + 1);
+                if let ImmExp::Var(v) = arg {
+                    res.push(Instr::Mov(MovArgs::ToReg(
+                        Reg::Rax,
+                        Arg64::Mem(MemRef {
+                            reg: Reg::Rsp,
+                            offset: var_args[v],
+                        }),
+                    )));
+                    res.push(Instr::Mov(MovArgs::ToMem(
+                        MemRef {
+                            reg: Reg::Rsp,
+                            offset: offset,
+                        },
+                        Reg32::Reg(Reg::Rax),
+                    )));
+                    continue;
+                }
+                res.push(Instr::Mov(MovArgs::ToReg(
+                    Reg::Rax,
+                    imm_to_arg64(arg, vars),
+                )));
+                res.push(Instr::Mov(MovArgs::ToMem(
+                    MemRef {
+                        reg: Reg::Rsp,
+                        offset: offset,
+                    },
+                    Reg32::Reg(Reg::Rax),
+                )));
+            }
+            res.push(Instr::Jmp(func.clone()));
+            res
+        }
         SeqExp::ExternalCall {
             fun_name,
             args,
             is_tail,
             ann,
         } => {
-            let mut offset: i32 = max_stack.try_into().unwrap();
-            offset += 16;
             let mut res = vec![];
+            let stack_top = align_stack(stack);
+
+            // record called function's parameters to [stack]
+            let mut offset = 16; // extra 8 is return address alloc
             for arg in args {
                 res.push(Instr::Mov(MovArgs::ToReg(
                     Reg::Rax,
-                    imm_to_arg64(arg, stack),
+                    imm_to_arg64(arg, vars),
                 )));
                 res.push(Instr::Mov(MovArgs::ToMem(
                     MemRef {
                         reg: Reg::Rsp,
-                        offset: -offset,
+                        offset: -(stack_top + offset),
                     },
                     Reg32::Reg(Reg::Rax),
                 )));
                 offset += 8;
             }
-            // record called function's parameters to [stack]
             res.push(Instr::Sub(BinArgs::ToReg(
                 Reg::Rsp,
-                Arg32::Unsigned(max_stack),
+                Arg32::Signed(stack_top),
             )));
             res.push(Instr::Jmp(fun_name.clone()));
             res.push(Instr::Add(BinArgs::ToReg(
                 Reg::Rsp,
-                Arg32::Unsigned(max_stack),
+                Arg32::Signed(stack_top),
             )));
             res
         }
@@ -443,54 +522,36 @@ fn compile_to_instrs_inner<'a, 'b>(
 
 /* Feel free to add any helper functions you need */
 fn compile_to_instrs(e: &SeqExp<()>, counter: &mut u32) -> Vec<Instr> {
-    let max_stack = space_needed(e);
-    let mut is = compile_to_instrs_inner(e, counter, max_stack, &mut HashMap::new());
+    let mut is = compile_to_instrs_inner(e, counter, 0, &mut HashMap::new());
     is.push(Instr::Ret);
     is
 }
 
 fn compile_func_to_instr(f: &FunDecl<SeqExp<()>, ()>, counter: &mut u32) -> Vec<Instr> {
-    let max_stack = space_needed(&f.body);
-    let mut stack = HashMap::<String, i32>::new();
-    for (i, param) in f.parameters.iter().enumerate() {
-        stack.insert(param.clone(), i32::try_from(i).unwrap() + 1);
-    }
-    compile_to_instrs_inner(&f.body, counter, max_stack, &mut stack)
+    let mut vars = HashMap::<String, i32>::new();
+    push_params(&mut vars, &f.parameters);
+    compile_to_instrs_inner(
+        &f.body,
+        counter,
+        f.parameters.len().try_into().unwrap(),
+        &mut vars,
+    )
 }
 
-fn space_needed(e: &SeqExp<()>) -> u32 {
-    let mut stack = 0;
-    match e {
-        SeqExp::Let {
-            var,
-            bound_exp,
-            body,
-            ann,
-        } => stack = space_needed(&bound_exp) + space_needed(&body) + 1,
-        SeqExp::Imm(_, _) => {}
-        SeqExp::Prim(_, _, _) => {}
-        SeqExp::If {
-            cond,
-            thn,
-            els,
-            ann,
-        } => stack = std::cmp::max(space_needed(&thn), space_needed(&els)),
-        SeqExp::FunDefs { decls, body, ann } => todo!(),
-        SeqExp::InternalTailCall(_, _, _) => todo!(),
-        SeqExp::ExternalCall {
-            fun_name,
-            args,
-            is_tail,
-            ann,
-        } => todo!(),
-    }
-    // even stack upon entry for internal SNAKE calls
-    // odd variables alloc + 1 return address alloc
+fn align_stack(mut stack: i32) -> i32 {
+    // internal SNAKE calls requires even stack
+    // Therefore, return odd variables alloc + 1 return address alloc
     if stack % 2 == 0 {
         stack += 1;
     }
     stack *= 8;
     stack
+}
+
+fn push_params(vars: &mut HashMap<String, i32>, params: &[String]) {
+    for (i, param) in params.iter().enumerate() {
+        vars.insert(param.clone(), i32::try_from(i).unwrap() + 1);
+    }
 }
 
 fn error_handle_instr() -> Vec<Instr> {
@@ -534,13 +595,11 @@ where
     let (global_functions, main) = lambda_lift(&p);
     let program = sequentializer::seq_prog(&global_functions, &main);
 
-    let mut counter : u32 = 0;
+    let mut counter: u32 = 0;
     let functions_is: String = program
         .funs
         .iter()
-        .map(|f| {
-            instrs_to_string(&compile_func_to_instr(&f, &mut counter))
-        })
+        .map(|f| instrs_to_string(&compile_func_to_instr(&f, &mut counter)))
         .collect();
     let main_is = instrs_to_string(&compile_to_instrs(&program.main, &mut counter));
 
