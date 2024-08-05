@@ -49,7 +49,7 @@ fn uniquify<Span>(e: &Exp<Span>, mapping: &HashMap<String, String>, counter: &mu
                         .iter()
                         .map(|param| func_scope_map[param].clone())
                         .collect(),
-                    body: uniquify(&body, &func_scope_map, counter),
+                    body: uniquify(&decl.body, &func_scope_map, counter),
                     ann: (),
                 })
             }

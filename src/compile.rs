@@ -5,6 +5,7 @@ use crate::lambda_lift::lambda_lift;
 use crate::sequentializer;
 use crate::syntax::{Exp, FunDecl, ImmExp, Prim, SeqExp, SeqProg, SurfFunDecl, SurfProg};
 
+use core::fmt;
 use std::collections::{HashMap, HashSet};
 use std::convert::{TryFrom, TryInto};
 use std::f32::consts::E;
@@ -60,10 +61,10 @@ pub enum CompileErr<Span> {
 }
 
 // returns instruction to move imm to Rax
-fn imm_to_rax(imm: &ImmExp, stack: &HashMap<String, i32>) -> Vec<Instr> {
+fn imm_to_rax(imm: &ImmExp, vars: &HashMap<String, i32>) -> Vec<Instr> {
     vec![Instr::Mov(MovArgs::ToReg(
         Reg::Rax,
-        imm_to_arg64(imm, stack),
+        imm_to_arg64(imm, vars),
     ))]
 }
 
@@ -77,14 +78,13 @@ static IF_ERROR: &str = "if_error";
 static LOGIC_ERROR: &str = "logic_error";
 static SNAKE_ERROR: &str = "snake_error";
 
-fn imm_to_arg64(imm: &ImmExp, stack: &HashMap<String, i32>) -> Arg64 {
+fn imm_to_arg64(imm: &ImmExp, vars: &HashMap<String, i32>) -> Arg64 {
     match &imm {
         ImmExp::Num(i) => Arg64::Signed(*i << 1),
         ImmExp::Var(s) => {
-            let offset = stack[s];
             Arg64::Mem(MemRef {
                 reg: Reg::Rsp,
-                offset: -offset,
+                offset: vars[s],
             })
         }
         ImmExp::Bool(b) => {
@@ -97,19 +97,19 @@ fn imm_to_arg64(imm: &ImmExp, stack: &HashMap<String, i32>) -> Arg64 {
     }
 }
 
-fn sub_for_cmp(exps: &Vec<ImmExp>, stack: &HashMap<String, i32>, reverse: bool) -> Vec<Instr> {
+fn sub_for_cmp(exps: &Vec<ImmExp>, vars: &HashMap<String, i32>, reverse: bool) -> Vec<Instr> {
     let mut res = vec![];
     if reverse {
         // exps[1] - exps[0]
         res.append(&mut vec![
-            Instr::Mov(MovArgs::ToReg(Reg::Rdx, imm_to_arg64(&exps[0], stack))),
-            Instr::Mov(MovArgs::ToReg(Reg::Rax, imm_to_arg64(&exps[1], stack))),
+            Instr::Mov(MovArgs::ToReg(Reg::Rdx, imm_to_arg64(&exps[0], vars))),
+            Instr::Mov(MovArgs::ToReg(Reg::Rax, imm_to_arg64(&exps[1], vars))),
         ]);
     } else {
         // exps[0] - exps[1]
         res.append(&mut vec![
-            Instr::Mov(MovArgs::ToReg(Reg::Rax, imm_to_arg64(&exps[0], stack))),
-            Instr::Mov(MovArgs::ToReg(Reg::Rdx, imm_to_arg64(&exps[1], stack))),
+            Instr::Mov(MovArgs::ToReg(Reg::Rax, imm_to_arg64(&exps[0], vars))),
+            Instr::Mov(MovArgs::ToReg(Reg::Rdx, imm_to_arg64(&exps[1], vars))),
         ]);
     }
     res.append(&mut cmp_check(Reg::Rax));
@@ -178,6 +178,7 @@ fn if_check(reg: Reg) -> Vec<Instr> {
     ]
 }
 
+// [vars] variable name -> offset from rsp in stack (negative number)
 fn compile_to_instrs_inner<'a, 'b>(
     e: &'a SeqExp<()>,
     counter: &mut u32,
@@ -352,11 +353,11 @@ fn compile_to_instrs_inner<'a, 'b>(
             ann,
         } => {
             let mut res = compile_to_instrs_inner(&bound_exp, counter, stack, vars);
-            let offset: i32 = ((stack + 1) * 8).try_into().unwrap();
+            let offset: i32 = ((stack + 1) * -8).try_into().unwrap();
             res.push(Instr::Mov(MovArgs::ToMem(
                 MemRef {
                     reg: Reg::Rsp,
-                    offset: -offset,
+                    offset: offset,
                 },
                 Reg32::Reg(Reg::Rax),
             )));
@@ -432,7 +433,7 @@ fn compile_to_instrs_inner<'a, 'b>(
                     }
                     var_args.insert(
                         v.clone(),
-                        -8 * (i32::try_from(var_args.len()).unwrap() + stack + 1),
+                        8 * (i32::try_from(var_args.len()).unwrap() + stack + 1),
                     );
                     res.push(Instr::Mov(MovArgs::ToReg(
                         Reg::Rax,
@@ -553,7 +554,7 @@ fn align_stack(mut stack: i32) -> i32 {
 
 fn push_params(vars: &mut HashMap<String, i32>, params: &[String]) {
     for (i, param) in params.iter().enumerate() {
-        vars.insert(param.clone(), i32::try_from(i).unwrap() + 1);
+        vars.insert(param.clone(), (i32::try_from(i).unwrap() + 1) * -8);
     }
 }
 
