@@ -154,12 +154,12 @@ fn uniquify<Span>(e: &Exp<Span>, mapping: &HashMap<String, String>, counter: &mu
 //     }
 // }
 
-fn rewrite_call_params(e: &Exp<()>, globals: &HashMap<String, FunDecl<Exp<()>, ()>>) -> Exp<()> {
+fn rewrite_call_params(e: &Exp<()>, globals: &HashMap<String, FunDecl<Exp<()>, ()>>, is_tail: bool) -> Exp<()> {
     match e {
         Exp::Prim(p, exps, _) => Exp::Prim(
             *p,
             exps.iter()
-                .map(|exp| Box::new(rewrite_call_params(exp, globals)))
+                .map(|exp| Box::new(rewrite_call_params(exp, globals, false)))
                 .collect(),
             (),
         ),
@@ -170,9 +170,9 @@ fn rewrite_call_params(e: &Exp<()>, globals: &HashMap<String, FunDecl<Exp<()>, (
         } => Exp::Let {
             bindings: bindings
                 .iter()
-                .map(|bind| (bind.0.clone(), rewrite_call_params(&bind.1, globals)))
+                .map(|bind| (bind.0.clone(), rewrite_call_params(&bind.1, globals, false)))
                 .collect(),
-            body: Box::new(rewrite_call_params(body, globals)),
+            body: Box::new(rewrite_call_params(body, globals, is_tail)),
             ann: (),
         },
         Exp::If {
@@ -181,9 +181,9 @@ fn rewrite_call_params(e: &Exp<()>, globals: &HashMap<String, FunDecl<Exp<()>, (
             els,
             ann,
         } => Exp::If {
-            cond: Box::new(rewrite_call_params(cond, globals)),
-            thn: Box::new(rewrite_call_params(thn, globals)),
-            els: Box::new(rewrite_call_params(els, globals)),
+            cond: Box::new(rewrite_call_params(cond, globals, false)),
+            thn: Box::new(rewrite_call_params(thn, globals, is_tail)),
+            els: Box::new(rewrite_call_params(els, globals, is_tail)),
             ann: (),
         },
         Exp::FunDefs { decls, body, ann } => Exp::FunDefs {
@@ -192,11 +192,11 @@ fn rewrite_call_params(e: &Exp<()>, globals: &HashMap<String, FunDecl<Exp<()>, (
                 .map(|decl| FunDecl {
                     name: decl.name.clone(),
                     parameters: decl.parameters.clone(),
-                    body: rewrite_call_params(&decl.body, globals),
+                    body: rewrite_call_params(&decl.body, globals, is_tail),
                     ann: (),
                 })
                 .collect(),
-            body: Box::new(rewrite_call_params(body, globals)),
+            body: Box::new(rewrite_call_params(body, globals, is_tail)),
             ann: (),
         },
         Exp::Call(func, params, _) => {
@@ -204,7 +204,7 @@ fn rewrite_call_params(e: &Exp<()>, globals: &HashMap<String, FunDecl<Exp<()>, (
                 println!("global doesn't contain {}", func);
                 return e.clone();
             }
-            println!("return external call from call");
+            println!("return external call from call, isTail = {}", is_tail);
             let mut mod_params = params.clone();
             for p in globals[func].parameters.iter().skip(params.len()) {
                 mod_params.push(Exp::Var(p.clone(), ()))
@@ -212,7 +212,7 @@ fn rewrite_call_params(e: &Exp<()>, globals: &HashMap<String, FunDecl<Exp<()>, (
             Exp::ExternalCall {
                 fun_name: func.to_string(),
                 args: mod_params,
-                is_tail: false,
+                is_tail: is_tail,
                 ann: (),
             }
         }
@@ -374,11 +374,11 @@ pub fn lambda_lift<Ann>(p: &Exp<Ann>) -> (Vec<FunDecl<Exp<()>, ()>>, Exp<()>) {
             .map(|decl| FunDecl {
                 name: decl.name.clone(),
                 parameters: decl.parameters.clone(),
-                body: rewrite_call_params(&decl.body, &globals),
+                body: rewrite_call_params(&decl.body, &globals, true),
                 ann: (),
             })
             .collect(),
-        rewrite_call_params(&main, &globals),
+        rewrite_call_params(&main, &globals, true),
     )
     // TODO: add parameter optimization pass
 }

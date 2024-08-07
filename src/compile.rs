@@ -81,12 +81,10 @@ static SNAKE_ERROR: &str = "snake_error";
 fn imm_to_arg64(imm: &ImmExp, vars: &HashMap<String, i32>) -> Arg64 {
     match &imm {
         ImmExp::Num(i) => Arg64::Signed(*i << 1),
-        ImmExp::Var(s) => {
-            Arg64::Mem(MemRef {
-                reg: Reg::Rsp,
-                offset: vars[s],
-            })
-        }
+        ImmExp::Var(s) => Arg64::Mem(MemRef {
+            reg: Reg::Rsp,
+            offset: vars[s],
+        }),
         ImmExp::Bool(b) => {
             if *b {
                 Arg64::Unsigned(SNAKE_TRU)
@@ -407,7 +405,7 @@ fn compile_to_instrs_inner<'a, 'b>(
             let body_label = format!("body_{}", counter);
             let mut res = vec![Instr::Jmp(body_label.clone())];
             for decl in decls {
-                push_params(vars, &decl.parameters);
+                push_params(stack, vars, &decl.parameters);
                 res.push(Instr::Label(decl.name.clone()));
                 res.extend(compile_to_instrs_inner(
                     &decl.body,
@@ -422,65 +420,7 @@ fn compile_to_instrs_inner<'a, 'b>(
             res
         }
         SeqExp::InternalTailCall(func, args, _) => {
-            let mut res = vec![];
-            // overwrite current stack with function arguments
-            // need to save variables to lower stack addresses to avoid overwriting them
-            let mut var_args = HashMap::<String, i32>::new();
-            for arg in args {
-                if let ImmExp::Var(v) = arg {
-                    if var_args.contains_key(v) {
-                        continue;
-                    }
-                    var_args.insert(
-                        v.clone(),
-                        8 * (i32::try_from(var_args.len()).unwrap() + stack + 1),
-                    );
-                    res.push(Instr::Mov(MovArgs::ToReg(
-                        Reg::Rax,
-                        imm_to_arg64(arg, &vars),
-                    )));
-                    res.push(Instr::Mov(MovArgs::ToMem(
-                        MemRef {
-                            reg: Reg::Rsp,
-                            offset: var_args[v],
-                        },
-                        Reg32::Reg(Reg::Rax),
-                    )));
-                }
-            }
-            for (i, arg) in args.iter().enumerate() {
-                let offset: i32 = -8 * (i32::try_from(i).unwrap() + 1);
-                if let ImmExp::Var(v) = arg {
-                    res.push(Instr::Mov(MovArgs::ToReg(
-                        Reg::Rax,
-                        Arg64::Mem(MemRef {
-                            reg: Reg::Rsp,
-                            offset: var_args[v],
-                        }),
-                    )));
-                    res.push(Instr::Mov(MovArgs::ToMem(
-                        MemRef {
-                            reg: Reg::Rsp,
-                            offset: offset,
-                        },
-                        Reg32::Reg(Reg::Rax),
-                    )));
-                    continue;
-                }
-                res.push(Instr::Mov(MovArgs::ToReg(
-                    Reg::Rax,
-                    imm_to_arg64(arg, vars),
-                )));
-                res.push(Instr::Mov(MovArgs::ToMem(
-                    MemRef {
-                        reg: Reg::Rsp,
-                        offset: offset,
-                    },
-                    Reg32::Reg(Reg::Rax),
-                )));
-            }
-            res.push(Instr::Jmp(func.clone()));
-            res
+            compile_tail_call(func.clone(), args, stack, vars, true)
         }
         SeqExp::ExternalCall {
             fun_name,
@@ -488,9 +428,11 @@ fn compile_to_instrs_inner<'a, 'b>(
             is_tail,
             ann,
         } => {
+            if *is_tail {
+                return compile_tail_call(fun_name.clone(), args, stack, vars, false);
+            }
             let mut res = vec![];
             let stack_top = align_stack(stack);
-
             // record called function's parameters to [stack]
             let mut offset = 16; // extra 8 is return address alloc
             for arg in args {
@@ -521,6 +463,74 @@ fn compile_to_instrs_inner<'a, 'b>(
     }
 }
 
+fn compile_tail_call(
+    func: String,
+    args: &[ImmExp],
+    stack: i32,
+    vars: &HashMap<String, i32>,
+    is_local: bool,
+) -> Vec<Instr> {
+    let mut res = vec![];
+    // overwrite current stack with function arguments
+    // need to save variables to lower stack addresses to avoid overwriting them
+    let mut var_args = HashMap::<String, i32>::new();
+    for arg in args {
+        if let ImmExp::Var(v) = arg {
+            if var_args.contains_key(v) {
+                continue;
+            }
+            var_args.insert(
+                v.clone(),
+                8 * (i32::try_from(var_args.len()).unwrap() + stack + 1),
+            );
+            res.push(Instr::Mov(MovArgs::ToReg(
+                Reg::Rax,
+                imm_to_arg64(arg, &vars),
+            )));
+            res.push(Instr::Mov(MovArgs::ToMem(
+                MemRef {
+                    reg: Reg::Rsp,
+                    offset: var_args[v],
+                },
+                Reg32::Reg(Reg::Rax),
+            )));
+        }
+    }
+    for (i, arg) in args.iter().enumerate() {
+        let offset: i32 = -8 * (i32::try_from(i).unwrap() + 1);
+        if let ImmExp::Var(v) = arg {
+            res.push(Instr::Mov(MovArgs::ToReg(
+                Reg::Rax,
+                Arg64::Mem(MemRef {
+                    reg: Reg::Rsp,
+                    offset: var_args[v],
+                }),
+            )));
+            res.push(Instr::Mov(MovArgs::ToMem(
+                MemRef {
+                    reg: Reg::Rsp,
+                    offset: offset,
+                },
+                Reg32::Reg(Reg::Rax),
+            )));
+            continue;
+        }
+        res.push(Instr::Mov(MovArgs::ToReg(
+            Reg::Rax,
+            imm_to_arg64(arg, vars),
+        )));
+        res.push(Instr::Mov(MovArgs::ToMem(
+            MemRef {
+                reg: Reg::Rsp,
+                offset: offset,
+            },
+            Reg32::Reg(Reg::Rax),
+        )));
+    }
+    res.push(Instr::Jmp(format!("func_{}", func)));
+    res
+}
+
 /* Feel free to add any helper functions you need */
 fn compile_to_instrs(e: &SeqExp<()>, counter: &mut u32) -> Vec<Instr> {
     let mut is = compile_to_instrs_inner(e, counter, 0, &mut HashMap::new());
@@ -531,7 +541,7 @@ fn compile_to_instrs(e: &SeqExp<()>, counter: &mut u32) -> Vec<Instr> {
 fn compile_func_to_instr(f: &FunDecl<SeqExp<()>, ()>, counter: &mut u32) -> Vec<Instr> {
     let mut is = vec![Instr::Label(format!("func_{}", f.name))];
     let mut vars = HashMap::<String, i32>::new();
-    push_params(&mut vars, &f.parameters);
+    push_params(0, &mut vars, &f.parameters);
     is.extend(compile_to_instrs_inner(
         &f.body,
         counter,
@@ -552,9 +562,9 @@ fn align_stack(mut stack: i32) -> i32 {
     stack
 }
 
-fn push_params(vars: &mut HashMap<String, i32>, params: &[String]) {
+fn push_params(stack: i32, vars: &mut HashMap<String, i32>, params: &[String]) {
     for (i, param) in params.iter().enumerate() {
-        vars.insert(param.clone(), (i32::try_from(i).unwrap() + 1) * -8);
+        vars.insert(param.clone(), (i32::try_from(i).unwrap() + stack + 1) * -8);
     }
 }
 
@@ -599,10 +609,6 @@ where
     let (global_functions, main) = lambda_lift(&p);
     println!("global function size = {}", global_functions.len());
     let program = sequentializer::seq_prog(&global_functions, &main);
-
-    for func in &program.funs {
-        println!("func body: {:#?}", func.body);
-    }
 
     let mut counter: u32 = 0;
     let functions_is: String = program
