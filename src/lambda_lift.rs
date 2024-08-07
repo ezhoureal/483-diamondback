@@ -209,7 +209,12 @@ fn rewrite_call_params(e: &Exp<()>, globals: &HashMap<String, FunDecl<Exp<()>, (
             for p in globals[func].parameters.iter().skip(params.len()) {
                 mod_params.push(Exp::Var(p.clone(), ()))
             }
-            Exp::ExternalCall { fun_name: func.to_string(), args: mod_params, is_tail: false, ann: () }
+            Exp::ExternalCall {
+                fun_name: func.to_string(),
+                args: mod_params,
+                is_tail: false,
+                ann: (),
+            }
         }
         _ => e.clone(),
     }
@@ -262,25 +267,28 @@ fn lift_functions(
         Exp::FunDefs { decls, body, ann } => {
             let mut new_local = vec![];
             for decl in decls {
+                let mut new_decl = FunDecl {
+                    name: decl.name.clone(),
+                    parameters: decl.parameters.clone(),
+                    body: lift_functions(&decl.body, vars, globals, need_lift),
+                    ann: (),
+                };
                 if !need_lift.contains(&decl.name) {
                     println!("{} doesn't need lift", decl.name);
-                    new_local.push(decl.clone());
+                    new_local.push(new_decl);
                     continue;
                 }
-                globals.insert(
-                    decl.name.clone(),
-                    FunDecl {
-                        name: decl.name.clone(),
-                        parameters: [decl.parameters.clone(), Vec::from_iter(vars.clone())]
-                            .concat(),
-                        body: decl.body.clone(),
-                        ann: (),
-                    },
-                );
+                new_decl.parameters =
+                    [decl.parameters.clone(), Vec::from_iter(vars.clone())].concat();
+                globals.insert(decl.name.clone(), new_decl);
             }
             let new_bod = lift_functions(&body, vars, globals, need_lift);
             if !new_local.is_empty() {
-                return Exp::FunDefs { decls: new_local, body: Box::new(new_bod), ann: () };
+                return Exp::FunDefs {
+                    decls: new_local,
+                    body: Box::new(new_bod),
+                    ann: (),
+                };
             }
             new_bod
         }
@@ -303,14 +311,23 @@ fn should_lift(p: &Exp<()>) -> HashSet<String> {
             for exp in exps {
                 set.extend(should_lift(exp));
             }
-        },
-        Exp::Let { bindings, body, ann } => {
+        }
+        Exp::Let {
+            bindings,
+            body,
+            ann,
+        } => {
             for (v, bind) in bindings {
                 set.extend(should_lift(bind));
             }
             set.extend(should_lift(body));
         }
-        Exp::If { cond, thn, els, ann } => {
+        Exp::If {
+            cond,
+            thn,
+            els,
+            ann,
+        } => {
             set.extend(should_lift(cond));
             set.extend(should_lift(thn));
             set.extend(should_lift(els));
@@ -328,7 +345,12 @@ fn should_lift(p: &Exp<()>) -> HashSet<String> {
             }
         }
         Exp::InternalTailCall(_, _, _) => todo!(),
-        Exp::ExternalCall { fun_name, args, is_tail, ann } => todo!(),
+        Exp::ExternalCall {
+            fun_name,
+            args,
+            is_tail,
+            ann,
+        } => todo!(),
         _ => {}
     }
     set
@@ -337,10 +359,14 @@ fn should_lift(p: &Exp<()>) -> HashSet<String> {
 // Lift some functions to global definitions
 pub fn lambda_lift<Ann>(p: &Exp<Ann>) -> (Vec<FunDecl<Exp<()>, ()>>, Exp<()>) {
     let unique_p = uniquify(&p, &mut HashMap::new(), &mut 0);
-    println!("after uniquify: {:?}", unique_p);
+    println!("after uniquify: {:#?}", unique_p);
     let mut globals = HashMap::new();
     let to_lift = should_lift(&unique_p);
-    println!("should lift len = {}, content = {:?}", to_lift.len(), to_lift);
+    println!(
+        "should lift len = {}, content = {:?}",
+        to_lift.len(),
+        to_lift
+    );
     let main = lift_functions(&unique_p, &HashSet::new(), &mut globals, &to_lift);
     (
         globals

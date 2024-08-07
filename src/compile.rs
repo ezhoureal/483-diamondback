@@ -600,6 +600,10 @@ where
     println!("global function size = {}", global_functions.len());
     let program = sequentializer::seq_prog(&global_functions, &main);
 
+    for func in &program.funs {
+        println!("func body: {:#?}", func.body);
+    }
+
     let mut counter: u32 = 0;
     let functions_is: String = program
         .funs
