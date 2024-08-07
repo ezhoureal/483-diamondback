@@ -177,11 +177,13 @@ fn if_check(reg: Reg) -> Vec<Instr> {
 }
 
 // [vars] variable name -> offset from rsp in stack (negative number)
+// [functions] function name -> stack size when function is declared
 fn compile_to_instrs_inner<'a, 'b>(
     e: &'a SeqExp<()>,
     counter: &mut u32,
     stack: i32,
     vars: &'b mut HashMap<String, i32>,
+    functions: &mut HashMap<String, i32>,
 ) -> Vec<Instr> {
     match e {
         SeqExp::Imm(exp, _) => imm_to_rax(exp, vars),
@@ -350,7 +352,7 @@ fn compile_to_instrs_inner<'a, 'b>(
             body,
             ann,
         } => {
-            let mut res = compile_to_instrs_inner(&bound_exp, counter, stack, vars);
+            let mut res = compile_to_instrs_inner(&bound_exp, counter, stack, vars, functions);
             let offset: i32 = ((stack + 1) * -8).try_into().unwrap();
             res.push(Instr::Mov(MovArgs::ToMem(
                 MemRef {
@@ -366,6 +368,7 @@ fn compile_to_instrs_inner<'a, 'b>(
                 counter,
                 stack + 1,
                 vars,
+                functions,
             ));
             res
         }
@@ -391,11 +394,14 @@ fn compile_to_instrs_inner<'a, 'b>(
                 counter,
                 stack,
                 &mut vars.clone(),
+                functions,
             ));
             res.push(Instr::Jmp(done_label.clone()));
 
             res.push(Instr::Label(els_label));
-            res.append(&mut compile_to_instrs_inner(els, counter, stack, vars));
+            res.append(&mut compile_to_instrs_inner(
+                els, counter, stack, vars, functions,
+            ));
             res.push(Instr::Label(done_label));
             res
         }
@@ -405,22 +411,26 @@ fn compile_to_instrs_inner<'a, 'b>(
             let body_label = format!("body_{}", counter);
             let mut res = vec![Instr::Jmp(body_label.clone())];
             for decl in decls {
+                functions.insert(decl.name.clone(), stack);
                 push_params(stack, vars, &decl.parameters);
-                res.push(Instr::Label(decl.name.clone()));
+                res.push(Instr::Label(format!("func_{}", decl.name.clone())));
                 res.extend(compile_to_instrs_inner(
                     &decl.body,
                     counter,
                     i32::try_from(decl.parameters.len()).unwrap(),
                     vars,
+                    functions,
                 ));
                 res.push(Instr::Ret);
             }
             res.push(Instr::Label(body_label));
-            res.extend(compile_to_instrs_inner(&body, counter, stack, vars));
+            res.extend(compile_to_instrs_inner(
+                &body, counter, stack, vars, functions,
+            ));
             res
         }
         SeqExp::InternalTailCall(func, args, _) => {
-            compile_tail_call(func.clone(), args, stack, vars, true)
+            return compile_tail_call(func.clone(), args, stack, functions[func], vars);
         }
         SeqExp::ExternalCall {
             fun_name,
@@ -429,7 +439,7 @@ fn compile_to_instrs_inner<'a, 'b>(
             ann,
         } => {
             if *is_tail {
-                return compile_tail_call(fun_name.clone(), args, stack, vars, false);
+                return compile_tail_call(fun_name.clone(), args, stack, 0, vars);
             }
             let mut res = vec![];
             let stack_top = align_stack(stack);
@@ -467,8 +477,8 @@ fn compile_tail_call(
     func: String,
     args: &[ImmExp],
     stack: i32,
+    decl_stack: i32, // stack size when the called function is declared
     vars: &HashMap<String, i32>,
-    is_local: bool,
 ) -> Vec<Instr> {
     let mut res = vec![];
     // overwrite current stack with function arguments
@@ -497,7 +507,7 @@ fn compile_tail_call(
         }
     }
     for (i, arg) in args.iter().enumerate() {
-        let offset: i32 = -8 * (i32::try_from(i).unwrap() + 1);
+        let offset: i32 = -8 * (i32::try_from(i).unwrap() + decl_stack + 1);
         if let ImmExp::Var(v) = arg {
             res.push(Instr::Mov(MovArgs::ToReg(
                 Reg::Rax,
@@ -533,7 +543,7 @@ fn compile_tail_call(
 
 /* Feel free to add any helper functions you need */
 fn compile_to_instrs(e: &SeqExp<()>, counter: &mut u32) -> Vec<Instr> {
-    let mut is = compile_to_instrs_inner(e, counter, 0, &mut HashMap::new());
+    let mut is = compile_to_instrs_inner(e, counter, 0, &mut HashMap::new(), &mut HashMap::new());
     is.push(Instr::Ret);
     is
 }
@@ -547,6 +557,7 @@ fn compile_func_to_instr(f: &FunDecl<SeqExp<()>, ()>, counter: &mut u32) -> Vec<
         counter,
         f.parameters.len().try_into().unwrap(),
         &mut vars,
+        &mut HashMap::new(),
     ));
     is.push(Instr::Ret);
     is

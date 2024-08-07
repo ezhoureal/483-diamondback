@@ -97,64 +97,11 @@ fn uniquify<Span>(e: &Exp<Span>, mapping: &HashMap<String, String>, counter: &mu
     }
 }
 
-// [locals] local variables in the function body
-// [captured] returns all unbound variables in the function body
-// [force_global] true if parent function is already lifted
-// fn search_unbound(
-//     self_func: &str,
-//     e: &Exp<()>,
-//     locals: &mut HashSet<String>,
-//     unbound: &mut HashSet<String>,
-// ) {
-//     match e {
-//         Exp::Var(s, _) => {
-//             if !locals.contains(s) {
-//                 unbound.insert(s.clone());
-//             }
-//         }
-//         Exp::Prim(_, exps, _) => {
-//             for exp in exps {
-//                 search_unbound(self_func, exp, locals, unbound);
-//             }
-//         }
-//         Exp::Let {
-//             bindings,
-//             body,
-//             ann,
-//         } => {
-//             for bind in bindings {
-//                 locals.insert(bind.0.clone());
-//                 search_unbound(self_func, &bind.1, locals, unbound);
-//             }
-//             search_unbound(self_func, &body, locals, unbound);
-//         }
-//         Exp::If {
-//             cond,
-//             thn,
-//             els,
-//             ann,
-//         } => {
-//             search_unbound(self_func, cond, locals, unbound);
-//             search_unbound(self_func, thn, locals, unbound);
-//             search_unbound(self_func, els, locals, unbound);
-//         }
-//         Exp::FunDefs { decls, body, ann } => {
-//             for decl in decls {
-//                 search_unbound(self_func, &decl.body, locals, unbound);
-//             }
-//             search_unbound(self_func, body, locals, unbound);
-//         }
-//         Exp::Call(func, params, _) => {
-//             // jump into other functions
-//             for param in params {
-//                 search_unbound(self_func, param, locals, unbound);
-//             }
-//         }
-//         _ => {}
-//     }
-// }
-
-fn rewrite_call_params(e: &Exp<()>, globals: &HashMap<String, FunDecl<Exp<()>, ()>>, is_tail: bool) -> Exp<()> {
+fn rewrite_call_params(
+    e: &Exp<()>,
+    globals: &HashMap<String, FunDecl<Exp<()>, ()>>,
+    is_tail: bool,
+) -> Exp<()> {
     match e {
         Exp::Prim(p, exps, _) => Exp::Prim(
             *p,
@@ -200,12 +147,16 @@ fn rewrite_call_params(e: &Exp<()>, globals: &HashMap<String, FunDecl<Exp<()>, (
             ann: (),
         },
         Exp::Call(func, params, _) => {
+            let mut mod_params: Vec<_> = params
+                .iter()
+                .map(|param| rewrite_call_params(param, globals, false))
+                .collect();
             if !globals.contains_key(func) {
-                println!("global doesn't contain {}", func);
-                return e.clone();
+                assert!(is_tail);
+                return Exp::InternalTailCall(func.clone(), mod_params, ());
             }
+
             println!("return external call from call, isTail = {}", is_tail);
-            let mut mod_params = params.clone();
             for p in globals[func].parameters.iter().skip(params.len()) {
                 mod_params.push(Exp::Var(p.clone(), ()))
             }
@@ -304,12 +255,12 @@ fn lift_functions(
 }
 
 // returns name of functions to lift
-fn should_lift(p: &Exp<()>) -> HashSet<String> {
+fn should_lift(p: &Exp<()>, funcs: &HashSet<String>, is_tail: bool) -> HashSet<String> {
     let mut set = HashSet::new();
     match p {
         Exp::Prim(_, exps, _) => {
             for exp in exps {
-                set.extend(should_lift(exp));
+                set.extend(should_lift(exp, funcs, is_tail));
             }
         }
         Exp::Let {
@@ -318,9 +269,9 @@ fn should_lift(p: &Exp<()>) -> HashSet<String> {
             ann,
         } => {
             for (v, bind) in bindings {
-                set.extend(should_lift(bind));
+                set.extend(should_lift(bind, funcs, false));
             }
-            set.extend(should_lift(body));
+            set.extend(should_lift(body, funcs, is_tail));
         }
         Exp::If {
             cond,
@@ -328,20 +279,26 @@ fn should_lift(p: &Exp<()>) -> HashSet<String> {
             els,
             ann,
         } => {
-            set.extend(should_lift(cond));
-            set.extend(should_lift(thn));
-            set.extend(should_lift(els));
+            set.extend(should_lift(cond, funcs, false));
+            set.extend(should_lift(thn, funcs, is_tail));
+            set.extend(should_lift(els, funcs, is_tail));
         }
         Exp::FunDefs { decls, body, ann } => {
+            let mut scoped_funcs = funcs.clone();
             for decl in decls {
-                set.insert(decl.name.clone());
-                set.extend(should_lift(&decl.body));
+                scoped_funcs.insert(decl.name.clone());
             }
-            set.extend(should_lift(body));
+            for decl in decls {
+                set.extend(should_lift(&decl.body, &scoped_funcs, false));
+            }
+            set.extend(should_lift(body, &scoped_funcs, is_tail));
         }
-        Exp::Call(_, args, _) => {
+        Exp::Call(func, args, _) => {
+            if !is_tail {
+                set.extend(funcs.clone());
+            }
             for arg in args {
-                set.extend(should_lift(arg));
+                set.extend(should_lift(arg, funcs, false));
             }
         }
         Exp::InternalTailCall(_, _, _) => todo!(),
@@ -361,7 +318,7 @@ pub fn lambda_lift<Ann>(p: &Exp<Ann>) -> (Vec<FunDecl<Exp<()>, ()>>, Exp<()>) {
     let unique_p = uniquify(&p, &mut HashMap::new(), &mut 0);
     println!("after uniquify: {:#?}", unique_p);
     let mut globals = HashMap::new();
-    let to_lift = should_lift(&unique_p);
+    let to_lift = should_lift(&unique_p, &HashSet::new(), true);
     println!(
         "should lift len = {}, content = {:?}",
         to_lift.len(),
